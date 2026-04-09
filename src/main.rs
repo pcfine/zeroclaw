@@ -117,7 +117,7 @@ mod verifiable_intent;
 
 use config::Config;
 
-// Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
+// 重新导出，便于二进制模块在保持单一事实来源的同时以 crate::<CommandEnum> 的方式使用。
 pub use zeroclaw::{
     ChannelCommands, CronCommands, GatewayCommands, HardwareCommands, IntegrationCommands,
     MigrateCommands, PeripheralCommands, ServiceCommands, SkillCommands, SopCommands,
@@ -150,6 +150,7 @@ enum EstopLevelArg {
 }
 
 /// `ZeroClaw` - Zero overhead. Zero compromise. 100% Rust.
+/// `ZeroClaw`——零开销、零妥协，100% Rust。
 #[derive(Parser, Debug)]
 #[command(name = "zeroclaw")]
 #[command(author = "theonlyhennygod")]
@@ -166,43 +167,50 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Initialize your workspace and configuration
+/// 初始化你的工作空间和配置
     Onboard {
         /// Overwrite existing config without confirmation
+/// 覆盖现有配置且不提示确认
         #[arg(long)]
         force: bool,
 
         /// Reinitialize from scratch (backup and reset all configuration)
+/// 从头重新初始化（先备份并重置全部配置）
         #[arg(long)]
         reinit: bool,
 
         /// Reconfigure channels only (fast repair flow)
+/// 仅重新配置各渠道（快速修复流程）
         #[arg(long)]
         channels_only: bool,
 
         /// API key for provider configuration
+/// 用于配置服务商的 API Key
         #[arg(long)]
         api_key: Option<String>,
 
         /// Provider name (used in quick mode, default: openrouter)
+/// 服务商名称（用于快速模式，默认：openrouter）
         #[arg(long)]
         provider: Option<String>,
-        /// Model ID override (used in quick mode)
+        /// 模型 ID 覆盖（用于快速模式）
         #[arg(long)]
         model: Option<String>,
-        /// Memory backend (sqlite, lucid, markdown, none) - used in quick mode, default: sqlite
+        /// 内存后端（sqlite、lucid、markdown、none）—用于快速模式，默认：sqlite
         #[arg(long)]
         memory: Option<String>,
 
-        /// Skip interactive prompts and use quick setup with defaults
+        /// 跳过交互式提问，使用带默认值的快速设置
         #[arg(long)]
         quick: bool,
 
-        /// Use the ratatui-based TUI onboarding wizard
+        /// 使用基于 ratatui 的 TUI 引导向导
         #[arg(long)]
         tui: bool,
     },
 
     /// Start the AI agent loop
+/// 启动 AI 代理循环
     #[command(long_about = "\
 Start the AI agent loop.
 
@@ -216,31 +224,34 @@ Examples:
   zeroclaw agent --peripheral nucleo-f401re:/dev/ttyACM0")]
     Agent {
         /// Single message mode (don't enter interactive mode)
+/// 单次消息模式（不进入交互会话）
         #[arg(short, long)]
         message: Option<String>,
 
-        /// Load and save interactive session state in this JSON file
+        /// 在此 JSON 文件中加载并保存交互会话状态
         #[arg(long)]
         session_state_file: Option<PathBuf>,
 
         /// Provider to use (openrouter, anthropic, openai, openai-codex)
+/// 要使用的服务商（openrouter、anthropic、openai、openai-codex）
         #[arg(short, long)]
         provider: Option<String>,
 
-        /// Model to use
+        /// 使用的模型
         #[arg(long)]
         model: Option<String>,
 
-        /// Temperature (0.0 - 2.0, defaults to config default_temperature)
+        /// 温度（0.0 - 2.0，默认取配置项 default_temperature）
         #[arg(short, long, value_parser = parse_temperature)]
         temperature: Option<f64>,
 
-        /// Attach a peripheral (board:path, e.g. nucleo-f401re:/dev/ttyACM0)
+        /// 绑定外设（格式 board:path，例如 nucleo-f401re:/dev/ttyACM0）
         #[arg(long)]
         peripheral: Vec<String>,
     },
 
     /// Start/manage the gateway server (webhooks, websockets)
+/// 启动/管理网关服务（webhook、WebSocket）
     #[command(long_about = "\
 Manage the gateway server (webhooks, websockets).
 
@@ -257,6 +268,7 @@ Examples:
     },
 
     /// Start ACP (Agent Control Protocol) server over stdio
+/// 通过标准输入输出启动 ACP（Agent Control Protocol）服务器
     #[command(long_about = "\
 Start the ACP server (JSON-RPC 2.0 over stdio).
 
@@ -270,16 +282,17 @@ Examples:
   zeroclaw acp                        # start ACP server
   zeroclaw acp --max-sessions 5       # limit concurrent sessions")]
     Acp {
-        /// Maximum concurrent sessions (default: 10)
+        /// 最大并发会话数（默认：10）
         #[arg(long)]
         max_sessions: Option<usize>,
 
-        /// Session inactivity timeout in seconds (default: 3600)
+        /// 会话空闲超时时间（秒，默认：3600）
         #[arg(long)]
         session_timeout: Option<u64>,
     },
 
     /// Start long-running autonomous runtime (gateway + channels + heartbeat + scheduler)
+/// 启动长期运行的自治运行时（网关 + 通道 + 心跳 + 调度器）
     #[command(long_about = "\
 Start the long-running autonomous daemon.
 
@@ -296,18 +309,19 @@ Examples:
   zeroclaw daemon -p 9090           # gateway on port 9090
   zeroclaw daemon --host 127.0.0.1  # localhost only")]
     Daemon {
-        /// Port to listen on (use 0 for random available port); defaults to config gateway.port
+        /// 监听端口（0 表示随机可用端口）；默认取配置项 gateway.port
         #[arg(short, long)]
         port: Option<u16>,
 
-        /// Host to bind to; defaults to config gateway.host
+        /// 绑定主机；默认取配置项 gateway.host
         #[arg(long)]
         host: Option<String>,
     },
 
     /// Manage OS service lifecycle (launchd/systemd user service)
+/// 管理操作系统服务生命周期（launchd/systemd 用户服务）
     Service {
-        /// Init system to use: auto (detect), systemd, or openrc
+        /// 要使用的初始化系统：auto（自动检测）、systemd 或 openrc
         #[arg(long, default_value = "auto", value_parser = ["auto", "systemd", "openrc"])]
         service_init: String,
 
@@ -315,20 +329,21 @@ Examples:
         service_command: ServiceCommands,
     },
 
-    /// Run diagnostics for daemon/scheduler/channel freshness
+    /// 运行诊断以检查守护进程/调度器/通道的健康状况
     Doctor {
         #[command(subcommand)]
         doctor_command: Option<DoctorCommands>,
     },
 
-    /// Show system status (full details)
+    /// 显示系统状态（完整详情）
     Status {
-        /// Output format: "exit-code" exits 0 if healthy, 1 otherwise (for Docker HEALTHCHECK)
+        /// 输出格式："exit-code" 表示健康则退出码 0，否则 1（用于 Docker HEALTHCHECK）
         #[arg(long)]
         format: Option<String>,
     },
 
     /// Engage, inspect, and resume emergency-stop states.
+    /// 进入、检查并恢复紧急停止状态。
     ///
     /// Examples:
     /// - `zeroclaw estop`
@@ -356,7 +371,7 @@ Examples:
         tools: Vec<String>,
     },
 
-    /// Configure and manage scheduled tasks
+    /// 配置并管理计划任务
     #[command(long_about = "\
 Configure and manage scheduled tasks.
 
@@ -383,15 +398,18 @@ Examples:
     },
 
     /// Manage provider model catalogs
+    /// 管理模型目录
     Models {
         #[command(subcommand)]
         model_command: ModelCommands,
     },
 
     /// List supported AI providers
+    /// 列出支持的 AI 提供商
     Providers,
 
     /// Manage channels (telegram, discord, slack)
+    /// 管理渠道（Telegram、Discord、Slack）
     #[command(long_about = "\
 Manage communication channels.
 
@@ -412,30 +430,35 @@ Examples:
     },
 
     /// Browse 50+ integrations
+    /// 浏览 50+ 集成
     Integrations {
         #[command(subcommand)]
         integration_command: IntegrationCommands,
     },
 
     /// Manage skills (user-defined capabilities)
+    /// 管理技能（用户自定义能力）
     Skills {
         #[command(subcommand)]
         skill_command: SkillCommands,
     },
 
     /// Migrate data from other agent runtimes
+    /// 从其他 Agent 运行时迁移数据
     Migrate {
         #[command(subcommand)]
         migrate_command: MigrateCommands,
     },
 
     /// Manage provider subscription authentication profiles
+    /// 管理供应商订阅身份认证配置
     Auth {
         #[command(subcommand)]
         auth_command: AuthCommands,
     },
 
     /// Discover and introspect USB hardware
+    /// 发现并自省 USB 硬件
     #[command(long_about = "\
 Discover and introspect USB hardware.
 
@@ -453,6 +476,7 @@ Examples:
     },
 
     /// Manage hardware peripherals (STM32, RPi GPIO, etc.)
+    /// 管理硬件外设（STM32、树莓派 GPIO 等）
     #[command(long_about = "\
 Manage hardware peripherals.
 
@@ -472,6 +496,7 @@ Examples:
     },
 
     /// Manage agent memory (list, get, stats, clear)
+    /// 管理智能体记忆（列表、获取、统计、清除）
     #[command(long_about = "\
 Manage agent memory entries.
 
@@ -491,6 +516,7 @@ Examples:
     },
 
     /// Manage configuration
+    /// 管理配置
     #[command(long_about = "\
 Manage ZeroClaw configuration.
 
@@ -507,6 +533,7 @@ Examples:
     },
 
     /// Check for and apply updates
+    /// 检查并应用更新
     #[command(long_about = "\
 Check for and apply ZeroClaw updates.
 
@@ -525,17 +552,21 @@ Examples:
   zeroclaw update --version 0.6.0      # install specific version")]
     Update {
         /// Only check for updates, don't install
+        /// 仅检查更新，不执行安装
         #[arg(long)]
         check: bool,
         /// Skip confirmation prompt
+        /// 跳过确认提示
         #[arg(long)]
         force: bool,
         /// Target version (default: latest)
+        /// 目标版本（默认：最新）
         #[arg(long)]
         version: Option<String>,
     },
 
     /// Run diagnostic self-tests
+    /// 运行诊断自检
     #[command(long_about = "\
 Run diagnostic self-tests to verify the ZeroClaw installation.
 
@@ -548,6 +579,7 @@ Examples:
   zeroclaw self-test --quick     # quick checks only (no network)")]
     SelfTest {
         /// Run quick checks only (no network)
+        /// 仅运行快速检查（无网络）
         #[arg(long)]
         quick: bool,
     },
@@ -879,6 +911,7 @@ enum MemoryCommands {
         #[arg(long)]
         category: Option<String>,
         /// Skip confirmation prompt
+        /// 跳过确认提示
         #[arg(long)]
         yes: bool,
     },
@@ -888,8 +921,11 @@ enum MemoryCommands {
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     // Install default crypto provider for Rustls TLS.
+// 安装 Rustls TLS 的默认加密提供者。
     // This prevents the error: "could not automatically determine the process-level CryptoProvider"
+// 这可以避免出现错误：“could not automatically determine the process-level CryptoProvider”
     // when both aws-lc-rs and ring features are available (or neither is explicitly selected).
+// 当同时启用 aws-lc-rs 与 ring 特性（或两者都未显式选择）时会触发该错误。
     if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
         eprintln!("Warning: Failed to install default crypto provider: {e:?}");
     }
@@ -905,11 +941,14 @@ async fn main() -> Result<()> {
             bail!("--config-dir cannot be empty");
         }
         // SAFETY: called early in main before any threads are spawned.
+// SAFETY：在 main 的早期调用，且在任何线程创建之前执行。
         unsafe { std::env::set_var("ZEROCLAW_CONFIG_DIR", config_dir) };
     }
 
     // Completions must remain stdout-only and should not load config or initialize logging.
+// 自动补全脚本必须只写入标准输出，且不应加载配置或初始化日志系统。
     // This avoids warnings/log lines corrupting sourced completion scripts.
+// 这样可以避免警告/日志行污染被 shell source 的补全脚本。
     if let Commands::Completions { shell } = &cli.command {
         let mut stdout = std::io::stdout().lock();
         write_shell_completion(*shell, &mut stdout)?;
@@ -917,6 +956,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize logging - respects RUST_LOG env var, defaults to INFO
+// 初始化日志系统——遵循 RUST_LOG 环境变量，默认级别为 INFO
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

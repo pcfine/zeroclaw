@@ -1,0 +1,31 @@
+{
+  "name": "zeroclaw-acp-sample",
+  "displayName": "ZeroClaw ACP Sample",
+  "publisher": "your-name",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onCommand:zeroclawAcp.newSession",
+    "onCommand:zeroclawAcp.prompt",
+    "onCommand:zeroclawAcp.stopSession"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "zeroclawAcp.newSession", "title": "ZeroClaw ACP: New Session" },
+      { "command": "zeroclawAcp.prompt", "title": "ZeroClaw ACP: Prompt" },
+      { "command": "zeroclawAcp.stopSession", "title": "ZeroClaw ACP: Stop Session" }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.0"
+  }
+}
