@@ -111,9 +111,11 @@ impl std::fmt::Display for MemoryCategory {
 #[async_trait]
 pub trait Memory: Send + Sync {
     /// Backend name
+    /// 后端名称
     fn name(&self) -> &str;
 
     /// Store a memory entry, optionally scoped to a session
+    /// 存储一条记忆项，可选指定所属会话范围
     async fn store(
         &self,
         key: &str,
@@ -125,6 +127,7 @@ pub trait Memory: Send + Sync {
     /// Recall memories matching a query (keyword search), optionally scoped to a session
     /// and time range. Time bounds use RFC 3339 / ISO 8601 format
     /// (e.g. "2025-03-01T00:00:00Z"); inclusive (created_at >= since, created_at <= until).
+    /// 根据查询关键词召回记忆，可选按会话与时间范围过滤（RFC 3339/ISO 8601，区间含边界）
     async fn recall(
         &self,
         query: &str,
@@ -135,9 +138,11 @@ pub trait Memory: Send + Sync {
     ) -> anyhow::Result<Vec<MemoryEntry>>;
 
     /// Get a specific memory by key
+    /// 通过键获取单个记忆项
     async fn get(&self, key: &str) -> anyhow::Result<Option<MemoryEntry>>;
 
     /// List all memory keys, optionally filtered by category and/or session
+    /// 列出所有记忆（可按类别和/或会话过滤）
     async fn list(
         &self,
         category: Option<&MemoryCategory>,
@@ -145,29 +150,38 @@ pub trait Memory: Send + Sync {
     ) -> anyhow::Result<Vec<MemoryEntry>>;
 
     /// Remove a memory by key
+    /// 通过键删除记忆
     async fn forget(&self, key: &str) -> anyhow::Result<bool>;
 
     /// Remove all memories in a namespace (category).
+    /// 删除某命名空间（类别）下的全部记忆
     /// Returns the number of deleted entries.
+    /// 返回删除的条目数
     /// Default: returns unsupported error. Backends that support bulk deletion override this.
+    /// 默认：返回“不支持”错误；支持批量删除的后端应覆盖实现
     async fn purge_namespace(&self, _namespace: &str) -> anyhow::Result<usize> {
         anyhow::bail!("purge_namespace not supported by this memory backend")
     }
 
     /// Remove all memories in a session.
     /// Returns the number of deleted entries.
+    /// 返回删除的条目数
     /// Default: returns unsupported error. Backends that support bulk deletion override this.
+    /// 默认：返回“不支持”错误；支持批量删除的后端应覆盖实现
     async fn purge_session(&self, _session_id: &str) -> anyhow::Result<usize> {
         anyhow::bail!("purge_session not supported by this memory backend")
     }
 
     /// Count total memories
+    /// 统计记忆总数
     async fn count(&self) -> anyhow::Result<usize>;
 
     /// Health check
+    /// 健康检查
     async fn health_check(&self) -> bool;
 
     /// Store a conversation trace as procedural memory.
+    /// 将对话轨迹存为过程性记忆
     ///
     /// Backends that support procedural storage override this
     /// to extract "how to" patterns from tool-calling turns.  The default
@@ -183,7 +197,9 @@ pub trait Memory: Send + Sync {
     /// Recall memories scoped to a specific namespace.
     ///
     /// Default implementation delegates to `recall()` and filters by namespace.
+    /// 默认实现委托给 `recall()` 并按命名空间过滤
     /// Backends with native namespace support should override for efficiency.
+    /// 有原生命名空间支持的后端应覆盖以提升效率
     async fn recall_namespaced(
         &self,
         namespace: &str,
@@ -205,11 +221,14 @@ pub trait Memory: Send + Sync {
     }
 
     /// Bulk-export memories matching the given filter criteria.
+    /// 按过滤条件批量导出记忆
     ///
     /// Intended for GDPR Art. 20 data portability. Returns entries ordered by
+    /// 用于满足 GDPR 第20条数据可携带性；结果按创建时间升序，排除向量嵌入
     /// creation time (ascending). Embeddings are excluded.
     ///
     /// Default implementation delegates to `list()` and post-filters on
+    /// 默认实现基于 `list()` 并在命名空间与时间范围上进行后过滤
     /// namespace and time range. Backends with native query support should
     /// override for efficiency.
     async fn export(&self, filter: &ExportFilter) -> anyhow::Result<Vec<MemoryEntry>> {
@@ -244,6 +263,7 @@ pub trait Memory: Send + Sync {
     ///
     /// Default implementation delegates to `store()`. Backends with native
     /// namespace/importance support should override.
+    /// 默认实现委托给 `store()`；具备命名空间/重要性原生支持的后端应覆盖
     async fn store_with_metadata(
         &self,
         key: &str,

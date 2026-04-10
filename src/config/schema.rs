@@ -5880,6 +5880,7 @@ pub struct ModelRouteConfig {
     /// Model to use with that provider
     pub model: String,
     /// Optional API key override for this route's provider
+    /// 可选：该路由专用的 API Key 覆盖；未设置时通常回退到全局/默认的 provider 凭据
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -5901,15 +5902,20 @@ pub struct ModelRouteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EmbeddingRouteConfig {
     /// Route hint name (e.g. "semantic", "archive", "faq")
+    /// 路由提示名，用于标识用途场景（如 "semantic"、"archive"、"faq"）
     pub hint: String,
     /// Embedding provider (`none`, `openai`, or `custom:<url>`)
+    /// 嵌入服务提供方：none（禁用/占位）、openai，或 custom:<url>（自定义 HTTP 端点）
     pub provider: String,
     /// Embedding model to use with that provider
+    /// 与上述 provider 搭配使用的嵌入模型名称（如 openai: "text-embedding-3-large"；custom 由服务端定义）
     pub model: String,
     /// Optional embedding dimension override for this route
+    /// 可选：覆盖该路由默认的嵌入向量维度（需与向量库索引维度一致，如 768/1536/3072 等）
     #[serde(default)]
     pub dimensions: Option<usize>,
     /// Optional API key override for this route's provider
+    /// 可选：该路由专用的 API Key 覆盖；未设置时通常回退到全局/默认的 provider 凭据
     #[serde(default)]
     pub api_key: Option<String>,
 }

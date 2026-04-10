@@ -172,18 +172,31 @@ impl Default for PerSenderTracker {
 /// Security policy enforced on all tool executions
 #[derive(Debug, Clone)]
 pub struct SecurityPolicy {
+    /// 自主级别：控制是否需要人工批准、可自动化程度 (AutonomyLevel)
     pub autonomy: AutonomyLevel,
+    /// 工作空间根目录：命令与文件访问的基准路径
     pub workspace_dir: PathBuf,
+    /// 仅限工作空间：true 时强制限制访问在工作空间/白名单根内
     pub workspace_only: bool,
+    /// 允许的命令白名单：非空时仅可执行列出的命令
     pub allowed_commands: Vec<String>,
+    /// 禁止访问的路径前缀黑名单（优先阻断）
     pub forbidden_paths: Vec<String>,
+    /// 额外允许的根目录白名单（除 workspace_dir 外）
     pub allowed_roots: Vec<PathBuf>,
+    /// 每小时最大动作数（节流/限流）
     pub max_actions_per_hour: u32,
+    /// 每日成本上限（单位：美分）
     pub max_cost_per_day_cents: u32,
+    /// 中风险操作是否需要人工批准
     pub require_approval_for_medium_risk: bool,
+    /// 是否直接阻断高风险命令
     pub block_high_risk_commands: bool,
+    /// 允许透传到子进程的环境变量白名单
     pub shell_env_passthrough: Vec<String>,
+    /// Shell 命令超时时间（秒）
     pub shell_timeout_secs: u64,
+    /// 每发送者用量/配额跟踪器（统计与审计）
     pub tracker: PerSenderTracker,
 }
 

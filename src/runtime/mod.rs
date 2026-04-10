@@ -9,16 +9,23 @@ pub use traits::RuntimeAdapter;
 use crate::config::RuntimeConfig;
 
 /// Factory: create the right runtime from config
+/// 根据配置选择并创建运行时适配器；仅支持 "native" 与 "docker"，
+/// 其他值会返回错误以提示用户修正配置。
 pub fn create_runtime(config: &RuntimeConfig) -> anyhow::Result<Box<dyn RuntimeAdapter>> {
     match config.kind.as_str() {
+        // 直接在宿主机环境运行，提供完整的 shell 访问能力
         "native" => Ok(Box::new(NativeRuntime::new())),
+        // 在 Docker 容器中执行任务，使用 config.docker 中的参数
         "docker" => Ok(Box::new(DockerRuntime::new(config.docker.clone()))),
+        // 预留占位：Cloudflare 运行时尚未实现，明确返回错误并建议使用 native
         "cloudflare" => anyhow::bail!(
             "runtime.kind='cloudflare' is not implemented yet. Use runtime.kind='native' for now."
         ),
+        // 空字符串（仅包含空白）视为配置缺失，返回格式化的错误信息
         other if other.trim().is_empty() => {
             anyhow::bail!("runtime.kind cannot be empty. Supported values: native, docker")
         }
+        // 未知的运行时类型，一律报错并给出支持的枚举值
         other => anyhow::bail!("Unknown runtime kind '{other}'. Supported values: native, docker"),
     }
 }

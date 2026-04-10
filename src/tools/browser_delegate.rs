@@ -1,9 +1,15 @@
 //! Browser delegation tool.
 //!
+//! 将浏览器相关任务委托给具备浏览器能力的 CLI 子进程（例如结合 `claude-in-chrome` MCP 工具的 Claude Code），
+//! 以便与缺少直接 API 的企业 Web 应用（Teams、Outlook、Jira、Confluence 等）交互。
+//!
 //! Delegates browser-based tasks to a browser-capable CLI subprocess (e.g.
 //! Claude Code with `claude-in-chrome` MCP tools) for interacting with
 //! corporate web applications (Teams, Outlook, Jira, Confluence) that lack
 //! direct API access.
+//!
+//! 本工具以非交互模式启动已配置的 CLI 二进制，传递结构化提示以指示其使用浏览器自动化。可配置持久化的
+//! Chrome 用户数据目录，使 SSO 会话在多次调用之间保持有效。
 //!
 //! The tool spawns the configured CLI binary in non-interactive mode, passing
 //! a structured prompt that instructs it to use browser automation. A
@@ -20,6 +26,7 @@ use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 use zeroclaw_macros::Configurable;
 
+/// 浏览器委托工具的配置（在配置文件的 `[browser_delegate]` 小节）。
 /// Configuration for browser delegation (`[browser_delegate]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Configurable)]
 #[prefix = "browser-delegate"]
@@ -44,11 +51,13 @@ pub struct BrowserDelegateConfig {
     pub task_timeout_secs: u64,
 }
 
+/// 浏览器委托的默认 CLI 可执行程序名称。
 /// Default CLI binary for browser delegation.
 fn default_browser_cli() -> String {
     "claude".into()
 }
 
+/// 任务的默认超时时间（秒，默认 2 分钟）。
 /// Default task timeout in seconds (2 minutes).
 fn default_browser_task_timeout() -> u64 {
     120
@@ -67,6 +76,7 @@ impl Default for BrowserDelegateConfig {
     }
 }
 
+/// 将浏览器任务委托给具备浏览器能力的 CLI 子进程的工具。
 /// Tool that delegates browser-based tasks to a browser-capable CLI subprocess.
 pub struct BrowserDelegateTool {
     security: Arc<SecurityPolicy>,
@@ -74,11 +84,17 @@ pub struct BrowserDelegateTool {
 }
 
 impl BrowserDelegateTool {
+    /// 使用给定的安全策略与配置创建 `BrowserDelegateTool`。
     /// Create a new `BrowserDelegateTool` with the given security policy and config.
     pub fn new(security: Arc<SecurityPolicy>, config: BrowserDelegateConfig) -> Self {
         Self { security, config }
     }
 
+    /// 为浏览器任务构建要执行的 CLI 命令。
+    ///
+    /// 使用配置的 CLI 二进制与 `tokio::process::Command` 构建命令，并添加非交互模式标志 `--print`；
+    /// 如果配置了 Chrome 用户数据目录，则通过环境变量注入以便复用 SSO 会话。
+    ///
     /// Build the CLI command for a browser task.
     ///
     /// Constructs a `tokio::process::Command` with the configured CLI binary,
@@ -114,6 +130,11 @@ impl BrowserDelegateTool {
         cmd
     }
 
+    /// 从自由文本中提取 URL，并根据域名策略逐一校验。
+    ///
+    /// 通过对 `task` 文本中可能包含的 URL 做域名校验，避免用户在任务文本中嵌入被阻止的链接来绕过策略；
+    /// 该文本会被原样转发给浏览器 CLI 子进程。
+    ///
     /// Extract URLs from free-form text and validate each against domain policy.
     ///
     /// Prevents policy bypass by embedding blocked URLs in the `task` text,
@@ -126,6 +147,10 @@ impl BrowserDelegateTool {
         Ok(())
     }
 
+    /// 根据允许/阻止列表与协议限制校验 URL。
+    ///
+    /// 仅允许 `http` 与 `https` 协议；当域名同时出现在允许与阻止列表时，阻止列表优先生效。
+    ///
     /// Validate URL against allowed/blocked domain lists and scheme restrictions.
     ///
     /// Only `http` and `https` schemes are permitted. Blocked domains take
@@ -173,6 +198,7 @@ impl BrowserDelegateTool {
     }
 }
 
+/// 判断 `domain` 是否匹配给定模式（精确匹配或后缀匹配）。
 /// Check whether `domain` matches a pattern (exact or suffix match).
 fn domain_matches(domain: &str, pattern: &str) -> bool {
     let d = domain.to_lowercase();
@@ -180,9 +206,11 @@ fn domain_matches(domain: &str, pattern: &str) -> bool {
     d == p || d.ends_with(&format!(".{}", p))
 }
 
+/// 从子进程捕获的最大 stderr（字符数上限）。
 /// Maximum stderr bytes to capture from the subprocess.
 const MAX_STDERR_CHARS: usize = 512;
 
+/// `extract_format` 参数支持的取值。
 /// Supported values for the `extract_format` parameter.
 const VALID_EXTRACT_FORMATS: &[&str] = &["text", "json", "summary"];
 
@@ -193,6 +221,7 @@ impl Tool for BrowserDelegateTool {
     }
 
     fn description(&self) -> &str {
+        // 将浏览器任务委托给具备浏览器能力的 CLI，用于与 Teams、Outlook、Jira、Confluence 等 Web 应用交互。
         "Delegate browser-based tasks to a browser-capable CLI for interacting with web applications like Teams, Outlook, Jira, Confluence"
     }
 
@@ -219,6 +248,8 @@ impl Tool for BrowserDelegateTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        // 安全门禁：先检查是否允许执行，再做频率限制登记；如被拒绝，返回带错误信息的 ToolResult。
+
         // Security gate
         if !self.security.can_act() {
             return Ok(ToolResult {

@@ -4,9 +4,16 @@ use serde_json::json;
 use std::path::PathBuf;
 
 /// Compact-mode helper for loading a skill's source file on demand.
+/// 中文：在“紧凑模式（compact skills mode）”下的辅助工具：
+/// 当系统提示只展示技能摘要而不包含完整源文件时，按需读取指定技能的源文件内容，
+/// 以便在推理时获取完整的技能指令。
 pub struct ReadSkillTool {
+    // 中文：工作区根目录，用于定位 skills/<name>/SKILL.md 或 SKILL.toml
+
     workspace_dir: PathBuf,
+    // 中文：是否启用“开放技能”（允许从外部目录挂载/加载技能）
     open_skills_enabled: bool,
+    // 中文：开放技能的根目录（可选）；如果启用，将在该目录下查找技能
     open_skills_dir: Option<String>,
 }
 
@@ -31,10 +38,12 @@ impl Tool for ReadSkillTool {
     }
 
     fn description(&self) -> &str {
+        // 中文：在“紧凑模式”下，按名称读取某个技能的完整源文件（无需知道路径）
         "Read the full source file for an available skill by name. Use this in compact skills mode when you need the complete skill instructions without remembering file paths."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        // 中文：参数只需要技能名（与 <available_skills> 列表中的名称一致）
         json!({
             "type": "object",
             "properties": {
@@ -48,6 +57,12 @@ impl Tool for ReadSkillTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        // 中文：执行流程
+        // 1) 解析 name 参数（必填）
+        // 2) 按工作区与开放技能设置加载技能列表
+        // 3) 按名称查找技能，未找到则返回错误并列出可用名称
+        // 4) 若技能存在但无可读位置（location），返回错误
+        // 5) 读取源文件并返回内容
         let requested = args
             .get("name")
             .and_then(|value| value.as_str())

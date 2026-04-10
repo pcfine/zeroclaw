@@ -15,17 +15,25 @@ use std::sync::Arc;
 /// Tool that runs a single prompt through an LLM and optionally validates
 /// the response against a JSON Schema. No tools are provided to the LLM —
 /// this is a pure text-in, text-out (or JSON-out) call.
+/// 中文：用于将单条提示词发送给 LLM（不附带任何工具调用能力），并可选按 JSON Schema
+/// 校验返回结果。属于纯文本输入、文本/JSON 输出的轻量调用，适合抽取、分类、摘要、转换等。
 pub struct LlmTaskTool {
+    // 中文：安全策略引用，用于在执行前做权限与操作类别的安全检查
     security: Arc<SecurityPolicy>,
     /// Default provider name from root config (e.g. "openrouter").
+    /// 中文：默认的模型提供商名称（来自根配置，例如 "openrouter"）
     default_provider: String,
     /// Default model from root config.
+    /// 中文：默认模型名称（来自根配置）
     default_model: String,
     /// Default temperature from root config.
+    /// 中文：默认采样温度（来自根配置，可被调用参数覆盖）
     default_temperature: f64,
     /// API key for provider authentication.
+    /// 中文：调用提供商所需的 API Key（可选）
     api_key: Option<String>,
     /// Provider runtime options inherited from root config.
+    /// 中文：提供商运行时选项（超时、重试、路由等），从根配置继承
     provider_runtime_options: providers::ProviderRuntimeOptions,
 }
 

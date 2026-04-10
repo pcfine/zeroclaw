@@ -3459,6 +3459,26 @@ pub(crate) fn build_tool_instructions(
 // provider, hardware RAG, peripherals) and enters either single-shot or
 // interactive REPL mode. The interactive loop manages history compaction
 // and hard trimming to keep the context window bounded.
+// 中文：CLI 入口函数。负责组装所有子系统（观测、运行时、安全策略、记忆、工具、
+// 提供商、硬件 RAG、外设），然后根据是否提供 message 决定执行单次对话或进入交互式 REPL。
+// 交互循环会进行历史压缩与硬截断以控制上下文窗口。
+// 主要流程：
+// 1) 初始化 observer/runtime/security/memory
+// 2) 装配工具（内置、外设、MCP、技能），按 allowed_tools 做能力过滤
+// 3) 解析 provider/model，构建系统提示词与工具说明
+// 4) 若传入 message：走单轮执行；否则进入交互模式（含思考指令、自动记忆、上下文构建、
+//    工具调用、模型切换与上下文溢出恢复、输出与历史持久化）
+// 参数说明：
+// - config: 全局配置（运行时、记忆、工具、MCP、外设、渠道、模型路由、自治策略等）
+// - message: 可选的用户输入；Some 时执行一次性处理，None 时进入交互模式
+// - provider_override: 覆盖默认提供商名（优先于配置）
+// - model_override: 覆盖默认模型名（优先于配置）
+// - temperature: 采样温度基准（会结合思考等级动态调整）
+// - peripheral_overrides: 外设覆盖（CLI 调试/强制启用）
+// - interactive: 是否启用交互式 CLI（影响审批与输出通道）
+// - session_state_file: 会话状态文件（交互模式历史持久化）
+// - allowed_tools: 工具白名单；Some 时仅保留匹配名称的工具
+// 返回：最终的 LLM 文本回复（单轮或最后一轮交互的输出）
 
 #[allow(clippy::too_many_lines)]
 pub async fn run(
@@ -3473,6 +3493,10 @@ pub async fn run(
     allowed_tools: Option<Vec<String>>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
+    // 中文：初始化与具体提供商无关的子系统
+    // - observer: 观测/事件上报
+    // - runtime: 运行时适配器（执行外部命令、网络等）
+    // - security: 安全策略（根据自治级别与工作区限制工具行为）
     let base_observer = observability::create_observer(&config.observability);
     let observer: Arc<dyn Observer> = Arc::from(base_observer);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -3483,6 +3507,7 @@ pub async fn run(
     ));
 
     // ── Memory (the brain) ────────────────────────────────────────
+    // 中文：构建记忆系统（向量存储 / 路由 / 存储后端），用于检索上下文与持久化记忆
     let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage_and_routes(
         &config.memory,
         &config.embedding_routes,
@@ -3493,6 +3518,10 @@ pub async fn run(
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Peripherals (merge peripheral tools into registry) ─
+    // 中文：外设相关， "rpi-gpio" 或 "raspberry-pi"（树莓派 GPIO，native 传输）
+    // - peripheral_overrides 非空时，表示 CLI 提供了外设覆盖参数（例如临时启用/禁用某些外设）
+    // - 此处仅记录日志用于可观测性；真正的外设工具仍以配置文件中声明的 boards 为准（配置优先生效）
+    //   即：当 CLI 覆盖与配置冲突时，以配置（boards）优先，避免越权或误操作
     if !peripheral_overrides.is_empty() {
         tracing::info!(
             peripherals = ?peripheral_overrides,
@@ -3501,6 +3530,12 @@ pub async fn run(
     }
 
     // ── Tools (including memory tools and peripherals) ────────────
+    // 中文：构建工具注册表。包含：
+    // - 内置工具（shell、文件、HTTP 等）、记忆相关工具
+    // - 外设工具（如摄像头、板卡等）
+    // - MCP 工具（按配置延迟/即时加载）
+    // - 技能生成的工具（skill 定义转为本地可调用函数）
+    // 注意：composio 用于第三方能力接入，可能需要实体 ID/Key
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
             config.composio.api_key.as_deref(),
@@ -3541,9 +3576,9 @@ pub async fn run(
     }
 
     // ── Capability-based tool access control ─────────────────────
-    // When `allowed_tools` is `Some(list)`, restrict the tool registry to only
-    // those tools whose name appears in the list. Unknown names are silently
-    // ignored. When `None`, all tools remain available (backward compatible).
+    // 中文：基于能力的工具访问控制
+    // - 当 allowed_tools=Some(list) 时，只保留名称在白名单中的工具；未知名称忽略
+    // - 当为 None 时，保持全部可用（向后兼容）
     if let Some(ref allow_list) = allowed_tools {
         tools_registry.retain(|t| allow_list.iter().any(|name| name == t.name()));
         tracing::info!(
@@ -3554,15 +3589,10 @@ pub async fn run(
     }
 
     // ── Wire MCP tools (non-fatal) — CLI path ────────────────────
-    // NOTE: MCP tools are injected after built-in tool filtering
-    // (filter_primary_agent_tools_or_fail / agent.allowed_tools / agent.denied_tools).
-    // MCP servers are user-declared external integrations; the built-in allow/deny
-    // filter is not appropriate for them and would silently drop all MCP tools when
-    // a restrictive allowlist is configured. Keep this block after any such filter call.
-    //
-    // When `deferred_loading` is enabled, MCP tools are NOT added to the registry
-    // eagerly. Instead, a `tool_search` built-in is registered so the LLM can
-    // fetch schemas on demand. This reduces context window waste.
+    // 中文：MCP 工具接入（非致命失败）。注意顺序：必须在内置工具过滤之后再注入，
+    // 否则 allowlist 会把外部 MCP 工具全部过滤掉。
+    // 当启用 deferred_loading：不立即注册具体 MCP 工具，改为注册 tool_search 协议，
+    // 由 LLM 按需查询工具 schema，减少系统提示体积。
     let mut deferred_section = String::new();
     let mut activated_handle: Option<
         std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>,
@@ -3629,6 +3659,10 @@ pub async fn run(
     }
 
     // ── Resolve provider ─────────────────────────────────────────
+    // 中文：解析提供商与模型的最终选择
+    // - 优先使用 CLI 覆盖项（provider_override / model_override）
+    // - 然后落回配置的默认值
+    // - 最后使用内置兜底（openrouter / anthropic/claude-sonnet-4）
     let mut provider_name = provider_override
         .as_deref()
         .or(config.default_provider.as_deref())
@@ -3661,6 +3695,7 @@ pub async fn run(
     });
 
     // ── Hardware RAG (datasheet retrieval when peripherals + datasheet_dir) ──
+    // 中文：硬件 RAG（当配置存在外设且提供 datasheet_dir 时，从资料中检索硬件上下文）
     let hardware_rag: Option<crate::rag::HardwareRag> = config
         .peripherals
         .datasheet_dir
@@ -3681,6 +3716,7 @@ pub async fn run(
         .collect();
 
     // ── Load locale-aware tool descriptions ────────────────────────
+    // 中文：按本地化设置加载工具描述，供系统提示拼接
     let i18n_locale = config
         .locale
         .as_deref()
@@ -3691,6 +3727,7 @@ pub async fn run(
     let i18n_descs = crate::i18n::ToolDescriptions::load(&i18n_locale, &i18n_search_dirs);
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
+    // 中文：汇总工作区技能与工具说明，构造系统提示词。支持原生工具与非原生工具两种拼接路径
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
 
     // Register skill-defined tools as callable tool specs in the tool registry
@@ -3835,22 +3872,26 @@ pub async fn run(
     );
 
     // Append structured tool-use instructions with schemas (only for non-native providers)
+    // 中文：若当前提供商不支持原生工具调用，需要将工具说明与 JSON Schema 注入到系统提示中
     if !native_tools {
         system_prompt.push_str(&build_tool_instructions(&tools_registry, Some(&i18n_descs)));
     }
 
     // Append deferred MCP tool names so the LLM knows what is available
+    // 中文：如果采用延迟加载，向系统提示追加 MCP 工具名清单，让模型知晓可用项
     if !deferred_section.is_empty() {
         system_prompt.push('\n');
         system_prompt.push_str(&deferred_section);
     }
 
     // ── Approval manager (supervised mode) ───────────────────────
+    // 中文：审批管理器（监督模式）。交互模式下启用，根据自治策略决定是否需要人工批准工具调用。
     let approval_manager = if interactive {
         Some(ApprovalManager::from_config(&config.autonomy))
     } else {
         None
     };
+    // 中文：渠道名称（影响观测/输出格式）
     let channel_name = if interactive { "cli" } else { "daemon" };
     let memory_session_id = session_state_file.as_deref().and_then(|path| {
         let raw = path.to_string_lossy().trim().to_string();
@@ -3879,6 +3920,7 @@ pub async fn run(
 
     if let Some(msg) = message {
         // ── Parse thinking directive from user message ─────────
+        // 中文：从用户消息中解析思考指令（/think:<level>），用于调整当轮系统提示与温度
         let (thinking_directive, effective_msg) =
             match crate::agent::thinking::parse_thinking_directive(&msg) {
                 Some((level, remaining)) => {
@@ -3919,6 +3961,7 @@ pub async fn run(
         }
 
         // Inject memory + hardware RAG context into user message
+        // 中文：检索记忆与硬件 RAG 片段，拼接到用户消息前，形成增强上下文
         let mem_context = build_context(
             mem.as_ref(),
             &effective_msg,
@@ -3961,6 +4004,11 @@ pub async fn run(
 
         #[allow(unused_assignments)]
         let mut response = String::new();
+        // 中文：工具调用主循环。负责：
+        // - 让模型生成工具调用与自然语言
+        // - 执行工具并将结果追加到历史
+        // - 处理模型切换请求、上下文溢出与恢复
+        // - 在达到迭代上限或模型停止调用工具时结束
         loop {
             match TOOL_LOOP_COST_TRACKING_CONTEXT
                 .scope(
@@ -3999,6 +4047,7 @@ pub async fn run(
                     break;
                 }
                 Err(e) => {
+                    // 中文：当模型请求切换（例如供应商路由或失败回退）时，重建 provider 并继续
                     if let Some((new_provider, new_model)) = is_model_switch_requested(&e) {
                         tracing::info!(
                             "Model switch requested, switching from {} {} to {} {}",
@@ -4059,11 +4108,13 @@ pub async fn run(
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);
     } else {
+        // 中文：进入交互模式（无初始消息）。打印帮助提示
         println!("🦀 ZeroClaw Interactive Mode");
         println!("Type /help for commands.\n");
         let cli = crate::channels::CliChannel::new();
 
         // Persistent conversation history across turns
+        // 中文：加载/初始化交互历史。若传入会话状态文件，则恢复历史，否则以系统提示起始
         let mut history = if let Some(path) = session_state_file.as_deref() {
             load_interactive_session_history(path, &system_prompt)?
         } else {
@@ -4074,9 +4125,8 @@ pub async fn run(
             print!("> ");
             let _ = std::io::stdout().flush();
 
-            // Read raw bytes to avoid UTF-8 validation errors when PTY
-            // transport splits multi-byte characters at frame boundaries
-            // (e.g. CJK input with spaces over kubectl exec / SSH).
+            // 中文：读取原始字节，避免 PTY 传输在多字节边界拆分导致 UTF-8 校验失败
+            // （例如通过 kubectl exec/SSH 输入 CJK 文本时的空格分隔）
             let mut raw = Vec::new();
             match std::io::BufRead::read_until(&mut std::io::stdin().lock(), b'\n', &mut raw) {
                 Ok(0) => break,
@@ -4105,6 +4155,7 @@ pub async fn run(
                     continue;
                 }
                 "/clear" | "/new" => {
+                    // 中文：清空当前会话（保留长期核心记忆），需二次确认
                     println!(
                         "This will clear the current conversation and delete all session memory."
                     );
@@ -4154,6 +4205,7 @@ pub async fn run(
             }
 
             // ── Parse thinking directive from interactive input ───
+            // 中文：解析交互输入中的思考指令，动态调整本轮温度与系统提示
             let (thinking_directive, effective_input) =
                 match crate::agent::thinking::parse_thinking_directive(&user_input) {
                     Some((level, remaining)) => {
@@ -4230,8 +4282,7 @@ pub async fn run(
                 &effective_input,
             );
 
-            // Set up streaming channel so tool progress and response
-            // content are printed progressively instead of buffered.
+            // 中文：设置流式输出通道，使工具进度与模型响应可以逐步打印而非一次性缓冲
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<DraftEvent>(64);
             let content_was_streamed =
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4262,7 +4313,7 @@ pub async fn run(
                 }
             });
 
-            // Ctrl+C cancels the in-flight turn instead of killing the process.
+            // 中文：Ctrl+C 仅取消当前轮次，而不是终止整个进程
             let cancel_token = CancellationToken::new();
             let cancel_token_clone = cancel_token.clone();
             let ctrlc_handle = tokio::spawn(async move {
@@ -4342,6 +4393,7 @@ pub async fn run(
                             continue;
                         }
                         // Context overflow recovery: compress and retry
+                        // 中文：上下文窗口溢出时，尝试压缩历史进行恢复
                         if crate::providers::reliable::is_context_window_exceeded(&e) {
                             tracing::warn!(
                                 "Context overflow in interactive loop, attempting recovery"
@@ -4386,7 +4438,7 @@ pub async fn run(
                 }
             };
 
-            // Clean up: stop the Ctrl+C listener and flush streaming events.
+            // 中文：清理：终止 Ctrl+C 监听，刷新未消费的流式事件
             ctrlc_handle.abort();
             drop(delta_tx);
             let _ = consumer_handle.await;
@@ -4404,7 +4456,7 @@ pub async fn run(
             }
             observer.record_event(&ObserverEvent::TurnComplete);
 
-            // Context compression before hard trimming to preserve long-context signal.
+            // 中文：在进行硬截断前先尝试上下文压缩，以尽可能保留长上下文信号
             {
                 let compressor = crate::agent::context_compressor::ContextCompressor::new(
                     config.agent.context_compression.clone(),

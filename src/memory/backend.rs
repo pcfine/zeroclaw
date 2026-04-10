@@ -1,8 +1,8 @@
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum MemoryBackendKind {
-    Sqlite,
-    Lucid,
-    Qdrant,
+    Sqlite, // 主后端，基于 SQLite 实现，支持向量搜索和嵌入功能，推荐使用；同时也是其他后端的基础和回退选项
+    Lucid, // 带有本地回退的外部桥接器 LucidMemory (lucid.rs) 通过本地 CLI 与 Lucid Memory 服务同步，同时保留 SQLite 作为回退选项，以确保数据持久性和访问能力
+    Qdrant, // 外部向量数据库 QdrantMemory (qdrant.rs) 通过 REST API 连接到 Qdrant 服务器，以进行专用的向量相似度搜索
     Markdown,
     None,
     Unknown,

@@ -117,6 +117,8 @@ pub fn should_skip_autosave_content(content: &str) -> bool {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+/// 已解析的嵌入配置（来自 hint 路由或 [memory] 默认配置）
+/// 包含最终使用的 provider / model / dimensions / api_key
 struct ResolvedEmbeddingConfig {
     provider: String,
     model: String,
@@ -137,6 +139,8 @@ impl std::fmt::Debug for ResolvedEmbeddingConfig {
 /// Look up the provider-specific environment variable for common embedding providers,
 /// so that `OPENAI_API_KEY` (etc.) takes precedence over the default-provider key
 /// that the caller passes in. Returns `None` for unknown providers.
+/// 查找常见嵌入提供方对应的环境变量（优先于调用方传入的 key）。
+/// 已支持：OPENAI_API_KEY / OPENROUTER_API_KEY / COHERE_API_KEY。
 fn embedding_provider_env_key(provider: &str) -> Option<String> {
     let env_var = match provider.trim() {
         "openai" => "OPENAI_API_KEY",
@@ -150,6 +154,10 @@ fn embedding_provider_env_key(provider: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// 解析嵌入配置：
+/// - 支持使用 "hint:<name>" 路由到 embedding_routes 中的提供方与模型
+/// - 合并优先级：route.api_key > provider 专用环境变量 > 调用方传入 api_key
+/// - 校验 provider/model 非空与维度 > 0，不合法则回退到 [memory] 段配置
 fn resolve_embedding_config(
     config: &MemoryConfig,
     embedding_routes: &[EmbeddingRouteConfig],
@@ -237,6 +245,14 @@ pub fn create_memory_with_storage(
 }
 
 /// Factory: create memory with optional storage-provider override and embedding routes.
+/// 工厂函数：根据配置、可选的存储提供方覆盖以及嵌入路由来创建内存后端。
+/// 流程概览：
+/// 1) 解析后端名称与类型（effective_memory_backend_name / classify_memory_backend）
+/// 2) 解析嵌入配置（resolve_embedding_config）
+/// 3) 执行记忆清理/保留（hygiene::run_if_due）
+/// 4) 可选：在记忆清理过程中导出核心记忆快照（snapshot::export_snapshot）
+/// 5) 冷启动自动水化（snapshot::hydrate_from_snapshot）
+/// 6) 构建具体后端（SqliteMemory 或 QdrantMemory），并注入嵌入提供方
 pub fn create_memory_with_storage_and_routes(
     config: &MemoryConfig,
     embedding_routes: &[EmbeddingRouteConfig],
@@ -246,7 +262,7 @@ pub fn create_memory_with_storage_and_routes(
 ) -> anyhow::Result<Box<dyn Memory>> {
     let backend_name = effective_memory_backend_name(&config.backend, storage_provider);
     let backend_kind = classify_memory_backend(&backend_name);
-    let resolved_embedding = resolve_embedding_config(config, embedding_routes, api_key);
+    let resolved_embedding: ResolvedEmbeddingConfig = resolve_embedding_config(config, embedding_routes, api_key);
 
     // Best-effort memory hygiene/retention pass (throttled by state file).
     if let Err(e) = hygiene::run_if_due(config, workspace_dir) {
@@ -288,6 +304,8 @@ pub fn create_memory_with_storage_and_routes(
         }
     }
 
+    /// 构建 SqliteMemory：
+    /// 使用已解析的嵌入配置创建嵌入提供方，并按配置权重/缓存/打开超时/搜索模式初始化
     fn build_sqlite_memory(
         config: &MemoryConfig,
         workspace_dir: &Path,
@@ -314,6 +332,8 @@ pub fn create_memory_with_storage_and_routes(
         Ok(mem)
     }
 
+    // Qdrant 分支：从配置或环境变量读取 url/collection/api_key，
+    // 并基于已解析嵌入配置创建嵌入器，返回延迟初始化的 QdrantMemory
     if matches!(backend_kind, MemoryBackendKind::Qdrant) {
         let url = config
             .qdrant

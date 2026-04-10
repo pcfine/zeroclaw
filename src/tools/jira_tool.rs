@@ -19,6 +19,7 @@ enum LevelOfDetails {
     Changelog,
 }
 
+/// 与 Jira REST API v3 交互的工具（支持读取、搜索、评论、列项目信息与自检）。
 /// Tool for interacting with the Jira REST API v3.
 ///
 /// Supports five actions gated by `[jira].allowed_actions` in config:
@@ -27,6 +28,7 @@ enum LevelOfDetails {
 /// - `comment_ticket` — requires explicit opt-in; mutating (Act policy).
 /// - `list_projects`  — requires explicit opt-in; read-only.
 /// - `myself`         — requires explicit opt-in; read-only. Verifies credentials.
+/// Jira 工具运行所需的最小配置：基础地址、用户名邮箱、API Token、允许动作白名单、安全策略与超时。
 pub struct JiraTool {
     base_url: String,
     email: String,
@@ -38,6 +40,13 @@ pub struct JiraTool {
 }
 
 impl JiraTool {
+    /// 构造函数：
+    /// - base_url：Jira 基础 URL（会去掉末尾斜杠）
+    /// - email：用于 Basic Auth 的用户名（邮箱）
+    /// - api_token：Jira API Token（建议使用应用专用 Token）
+    /// - allowed_actions：允许的动作白名单（安全策略前置过滤）
+    /// - security：安全策略控制（读/写操作分级）
+    /// - timeout_secs：HTTP 请求超时秒数
     pub fn new(
         base_url: String,
         email: String,
@@ -57,10 +66,12 @@ impl JiraTool {
         }
     }
 
+    /// 动作是否在白名单中（由配置 `[jira].allowed_actions` 控制）。
     fn is_action_allowed(&self, action: &str) -> bool {
         self.allowed_actions.iter().any(|a| a == action)
     }
 
+    /// 获取工单详情：按不同 `LevelOfDetails` 控制返回字段与展开项（renderedFields/changelog等）。
     async fn get_ticket(
         &self,
         issue_key: &str,
@@ -131,6 +142,9 @@ impl JiraTool {
         })
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    /// 使用 JQL 分页搜索工单：按 `max_results` 控制总返回条数，按 JIRA_SEARCH_PAGE_SIZE 分批请求；
+    /// 将返回结果标准化为轻量字段（summary/priority/status/assignee/created/updated）。
     #[allow(clippy::cast_possible_truncation)]
     async fn search_tickets(
         &self,
@@ -205,6 +219,10 @@ impl JiraTool {
         })
     }
 
+    /// 对工单发表评论：支持受限的类 Markdown 语法（**加粗**、- 列表项、@邮箱 提及）。
+    /// - @提及：仅当以 @ 前缀且解析为有效邮箱时才尝试解析为 Jira 提及；否则按纯文本保留。
+    /// - 邮箱解析：清理常见标点后通过 users 搜索接口解析 accountId/displayName。
+    /// - 内容格式：转换为 Atlassian Document Format (ADF) 再提交。
     async fn comment_ticket(
         &self,
         issue_key: &str,
@@ -255,6 +273,7 @@ impl JiraTool {
         })
     }
 
+    /// 列出项目列表，并并发拉取每个项目的工作流状态；同时返回可分配用户的基本信息（displayName/email）。
     async fn list_projects(&self) -> anyhow::Result<ToolResult> {
         let url = format!("{}/rest/api/3/project", self.base_url);
 
@@ -383,6 +402,7 @@ impl JiraTool {
         })
     }
 
+    /// 自检接口：验证凭据有效性并返回当前账户基本信息（accountId/displayName/email/active）。
     async fn get_myself(&self) -> anyhow::Result<ToolResult> {
         let url = format!("{}/rest/api/3/myself", self.base_url);
 
@@ -459,6 +479,7 @@ impl Tool for JiraTool {
     }
 
     fn description(&self) -> &str {
+        // 与 Jira 交互：支持按不同详情级别获取工单、使用 JQL 搜索、发表评论（含 @提及 与格式）。
         "Interact with Jira: get tickets with configurable detail level, search issues with JQL, add comments with mention and formatting support."
     }
 
@@ -631,6 +652,7 @@ impl Tool for JiraTool {
 
 // ── Input validation ──────────────────────────────────────────────────────────
 
+/// 校验 `issue_key` 格式是否为 `PROJ-123` 或 `proj-123`，避免拼接 URL 时被构造型路径（如 `../../..`）利用。
 /// Validates that `issue_key` matches the Jira key format `PROJ-123` or `proj-123`.
 /// Prevents path traversal if a crafted key like `../../other` were interpolated
 /// directly into the URL.
@@ -650,6 +672,7 @@ fn validate_issue_key(key: &str) -> anyhow::Result<()> {
     }
 }
 
+// ── 响应整形（将 Jira 原始返回字段提炼为更易读的结构） ───────────────────────────────
 // ── Response shaping ──────────────────────────────────────────────────────────
 
 /// Safely extracts the first 10 characters (date prefix) from a string.
@@ -794,6 +817,7 @@ fn shape_projects(projects: &[Value], statuses_per_project: &[Value]) -> Vec<Val
         .collect()
 }
 
+// ── 评论文本到 ADF 的构建逻辑（支持部分 Markdown 与 @提及） ─────────────────────────────
 // ── Comment / ADF builder ─────────────────────────────────────────────────────
 
 /// Strips trailing punctuation that commonly appears after an email address

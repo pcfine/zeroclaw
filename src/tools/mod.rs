@@ -455,12 +455,19 @@ pub fn all_tools_with_runtime(
     ];
 
     // Register discord_search if discord_history channel is configured
+    // 中文：如果在 channels 配置中启用了 discord_history 渠道，则注册 discord_search 工具。
+    // 作用：让 LLM 能搜索本地持久化的 Discord 历史消息（sqlite 库）。
+    // 注意：打开数据库失败会仅告警，不会中断其他工具注册流程。
     if root_config.channels_config.discord_history.is_some() {
+        // 中文：实例化一个名为 "discord" 的 SqliteMemory（工作区下的 discord.db），
+        // 成功后用它构造 DiscordSearchTool 并加入工具列表；失败则记录警告。
         match crate::memory::SqliteMemory::new_named(workspace_dir, "discord") {
             Ok(discord_mem) => {
+                // 中文：将该内存句柄包装为 Arc，交给 DiscordSearchTool 用于检索历史
                 tool_arcs.push(Arc::new(DiscordSearchTool::new(Arc::new(discord_mem))));
             }
             Err(e) => {
+                // 中文：打开 discord.db 失败（路径不存在/权限问题/损坏等），仅发出警告，跳过注册
                 tracing::warn!("discord_search: failed to open discord.db: {e}");
             }
         }
