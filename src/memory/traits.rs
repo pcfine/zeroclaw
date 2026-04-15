@@ -26,22 +26,40 @@ pub struct ProceduralMessage {
 }
 
 /// A single memory entry
+/// 单条记忆条目：用于持久化存储与检索会话/长期信息。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
+    /// Unique identifier assigned by the backend.
+    /// 后端分配的唯一 ID，用于去重、更新与删除定位。
     pub id: String,
+    /// Logical key for this memory entry.
+    /// 逻辑键（业务侧使用的键名），便于按键读取与覆盖。
     pub key: String,
+    /// Raw content of the memory.
+    /// 记忆正文内容（纯文本/序列化文本）。
     pub content: String,
+    /// Memory category for organization.
+    /// 记忆分类（Core/Daily/Conversation/Custom），用于检索分组与策略控制。
     pub category: MemoryCategory,
+    /// RFC 3339 timestamp when created.
+    /// 创建时间戳（RFC 3339/ISO 8601 字符串）。
     pub timestamp: String,
+    /// Optional session scoping.
+    /// 可选的会话 ID（按会话隔离记忆空间）。
     pub session_id: Option<String>,
+    /// Hybrid relevance score from vector/keyword search.
+    /// 混合相关度得分（向量/关键词检索产生），用于裁剪与排序；缺省为 None。
     pub score: Option<f64>,
     /// Namespace for isolation between agents/contexts.
+    /// 命名空间：在不同代理/上下文间做隔离；默认值由 `default_namespace()` 提供。
     #[serde(default = "default_namespace")]
     pub namespace: String,
     /// Importance score (0.0–1.0) for prioritized retrieval.
+    /// 重要性分：0.0–1.0，检索/保留时可优先考虑高重要性条目（可选）。
     #[serde(default)]
     pub importance: Option<f64>,
     /// If this entry was superseded by a newer conflicting entry.
+    /// 若该条目已被较新的冲突条目取代，则记录取代者的 ID（可选）。
     #[serde(default)]
     pub superseded_by: Option<String>,
 }

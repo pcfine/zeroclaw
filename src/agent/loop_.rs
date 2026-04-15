@@ -304,19 +304,27 @@ fn autosave_memory_key(prefix: &str) -> String {
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
 /// prevent unrelated memories from bleeding into the conversation.
 /// Core memories are exempt from time decay (evergreen).
+///
+/// 功能：检索与当前消息相关的记忆片段，构建注入到用户消息前的“记忆上下文”前缀。
+/// - 低于 `min_relevance_score` 的条目会被过滤，以避免不相关内容污染对话。
+/// - 核心（Core）记忆不参与时间衰减（常青），普通记忆会随时间降低得分。
 async fn build_context(
     mem: &dyn Memory,
     user_msg: &str,
     min_relevance_score: f64,
     session_id: Option<&str>,
 ) -> String {
+    // 初始化上下文缓冲区
     let mut context = String::new();
 
     // Pull relevant memories for this message
+    // 从记忆库召回与本条用户消息最相关的若干条目（这里最多取 5 条），可按 session_id 做命名空间隔离
     if let Ok(mut entries) = mem.recall(user_msg, 5, session_id, None, None).await {
         // Apply time decay: older non-Core memories score lower
+        // 对非 Core 的历史记忆应用时间衰减：越久远的记忆得分越低，降低被注入的概率
         decay::apply_time_decay(&mut entries, decay::DEFAULT_HALF_LIFE_DAYS);
 
+        // 依据最小相关度阈值进行过滤；没有 score 的保留（兼容旧数据或无评分情况）
         let relevant: Vec<_> = entries
             .iter()
             .filter(|e| match e.score {
@@ -326,22 +334,28 @@ async fn build_context(
             .collect();
 
         if !relevant.is_empty() {
+            // 写入记忆上下文块头
             context.push_str("[Memory context]\n");
             for entry in &relevant {
+                // 跳过助手自动保存键（避免把模型自身的草稿/中间态回灌给自己）
                 if memory::is_assistant_autosave_key(&entry.key) {
                     continue;
                 }
+                // 跳过应该被忽略的内容（如空白/过短/噪音片段）
                 if memory::should_skip_autosave_content(&entry.content) {
                     continue;
                 }
                 // Skip entries containing tool_result blocks — they can leak
                 // stale tool output from previous heartbeat ticks into new
                 // sessions, presenting the LLM with orphan tool_result data.
+                // 跳过包含 <tool_result 的条目：可能将上一次心跳/会话的工具输出泄露到新回合
                 if entry.content.contains("<tool_result") {
                     continue;
                 }
+                // 以 "- key: content" 的形式逐条追加到上下文块中
                 let _ = writeln!(context, "- {}: {}", entry.key, entry.content);
             }
+            // 若仅有块头无内容，则清空；否则补上块尾并空一行
             if context == "[Memory context]\n" {
                 context.clear();
             } else {
@@ -350,6 +364,7 @@ async fn build_context(
         }
     }
 
+    // 返回构造好的上下文前缀；无相关记忆时返回空串
     context
 }
 
@@ -2269,6 +2284,12 @@ fn maybe_inject_channel_delivery_defaults(
 //   • max_iterations is reached (runaway safety), or
 //   • the cancellation token fires (external abort).
 
+/// 执行一次代理工具调用循环：
+/// - 将当前历史消息发送给 LLM（自动处理视觉模型/原生工具能力/流式输出）
+/// - 解析返回的工具调用（优先使用原生结构化调用，必要时回退到文本解析）
+/// - 执行工具（审批控制、参数去重、并发/串行调度、前后置钩子、循环检测）
+/// - 将工具结果写回到历史，继续迭代，直到没有工具调用并返回最终文本
+///
 /// Execute a single turn of the agent loop: send messages, parse tool calls,
 /// execute tools, and loop until the LLM produces a final text response.
 #[allow(clippy::too_many_arguments)]
@@ -2298,20 +2319,25 @@ pub(crate) async fn run_tool_call_loop(
     context_token_budget: usize,
     shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) -> Result<String> {
+    // 最大迭代次数：当入参为 0 时使用 DEFAULT_MAX_TOOL_ITERATIONS，上限防止跑飞
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
         max_tool_iterations
     };
 
+    // 为本次工具循环生成唯一 turn_id，便于观测/追踪
     let turn_id = Uuid::new_v4().to_string();
+    // 记录循环开始时间：用于时间门控的循环检测与观测
     let loop_started_at = Instant::now();
     let loop_ignore_tools: HashSet<&str> = pacing
         .loop_ignore_tools
         .iter()
         .map(String::as_str)
         .collect();
+    // 连续相同工具输出计数（时间门控开启后生效），>=3 次中止
     let mut consecutive_identical_outputs: usize = 0;
+    // 上一轮用于循环检测的工具输出哈希
     let mut last_tool_output_hash: Option<u64> = None;
 
     let mut loop_detector = crate::agent::loop_detector::LoopDetector::new(
@@ -2333,6 +2359,7 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         // Shared iteration budget: parent + subagents share a global counter
+        // 共享回合预算：父代理与子代理共享计数器，每轮消耗 1
         if let Some(ref budget) = shared_budget {
             let remaining = budget.load(std::sync::atomic::Ordering::Relaxed);
             if remaining == 0 {
@@ -2342,6 +2369,7 @@ pub(crate) async fn run_tool_call_loop(
             budget.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // 预防性上下文管理：在溢出前裁剪历史
         // Preemptive context management: trim history before it overflows
         if context_token_budget > 0 {
             let estimated = estimate_history_tokens(history);
@@ -2379,6 +2407,7 @@ pub(crate) async fn run_tool_call_loop(
             }
         }
 
+        // 检查是否通过 model_switch 工具请求了模型切换
         // Check if model switch was requested via model_switch tool
         if let Some(ref callback) = model_switch_callback {
             if let Ok(guard) = callback.lock() {
@@ -2401,6 +2430,7 @@ pub(crate) async fn run_tool_call_loop(
             }
         }
 
+        // 每次迭代重建 tool_specs，以便新增激活（延迟加载）的工具能生效
         // Rebuild tool_specs each iteration so newly activated deferred tools appear.
         let mut tool_specs: Vec<crate::tools::ToolSpec> = tools_registry
             .iter()
@@ -2414,10 +2444,13 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
         }
+        // 是否请求 provider 走原生工具路径（前提：provider 支持且目前确有工具）
         let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
 
+        // 统计历史中图像标记数量：用于视觉 provider 路由
         let image_marker_count = multimodal::count_image_markers(history);
 
+        // ── 视觉 provider 路由 ──────────────────────────
         // ── Vision provider routing ──────────────────────────
         // When the default provider lacks vision support but a dedicated
         // vision_provider is configured, create it on demand and use it
@@ -2453,6 +2486,7 @@ pub(crate) async fn run_tool_call_loop(
             None
         };
 
+        // 根据视觉能力选择本轮实际使用的 provider 与 model（保持对外名称/模型不变）
         let (active_provider, active_provider_name, active_model): (&dyn Provider, &str, &str) =
             if let Some(ref vp_box) = vision_provider_box {
                 let vp_name = multimodal_config
@@ -2468,6 +2502,7 @@ pub(crate) async fn run_tool_call_loop(
         let prepared_messages =
             multimodal::prepare_messages_for_provider(history, multimodal_config).await?;
 
+        // ── 进度：LLM 思考中 ────────────────────────────
         // ── Progress: LLM thinking ────────────────────────────
         if let Some(ref tx) = on_delta {
             let phase = if iteration == 0 {
@@ -2478,6 +2513,7 @@ pub(crate) async fn run_tool_call_loop(
             let _ = tx.send(DraftEvent::Progress(phase)).await;
         }
 
+        // 观测记录：统计 provider/model/消息数，便于分析
         observer.record_event(&ObserverEvent::LlmRequest {
             provider: active_provider_name.to_string(),
             model: active_model.to_string(),
@@ -2499,11 +2535,13 @@ pub(crate) async fn run_tool_call_loop(
 
         let llm_started_at = Instant::now();
 
+        // 触发 LLM 调用前的空钩子（仅通知，不修改）：可用于外部观测
         // Fire void hook before LLM call
         if let Some(hooks) = hooks {
             hooks.fire_llm_input(history, model).await;
         }
 
+        // 预算约束：超出限制则阻断（未启用预算时此处无操作）
         // Budget enforcement — block if limit exceeded (no-op when not scoped)
         if let Some(BudgetCheck::Exceeded {
             current_usd,
@@ -2519,6 +2557,7 @@ pub(crate) async fn run_tool_call_loop(
             ));
         }
 
+        // 统一调用 Provider::chat，使 provider 的原生工具处理逻辑得以生效
         // Unified path via Provider::chat so provider-specific native tool logic
         // (OpenAI/Anthropic/OpenRouter/compatible adapters) is honored.
         let request_tools = if use_native_tools {
@@ -2526,6 +2565,7 @@ pub(crate) async fn run_tool_call_loop(
         } else {
             None
         };
+        // 是否消费 provider 的流式增量（需要 on_delta 且 provider 支持；若带工具，需 provider 支持流式工具事件）
         let should_consume_provider_stream = on_delta.is_some()
             && provider.supports_streaming()
             && (request_tools.is_none() || provider.supports_streaming_tool_events());
@@ -2843,6 +2883,7 @@ pub(crate) async fn run_tool_call_loop(
             parsed_text
         };
 
+        // ── 进度：LLM 已响应 ─────────────────────────────
         // ── Progress: LLM responded ─────────────────────────────
         if let Some(ref tx) = on_delta {
             let llm_secs = llm_started_at.elapsed().as_secs();
@@ -2870,7 +2911,7 @@ pub(crate) async fn run_tool_call_loop(
                     "text": scrub_credentials(&display_text),
                 }),
             );
-            // No tool calls — this is the final response.
+            // 无工具调用——这是最终响应。
             // If a streaming sender is provided, relay the text in small chunks
             // so the channel can progressively update the draft message.
             if let Some(ref tx) = on_delta {
@@ -2910,6 +2951,7 @@ pub(crate) async fn run_tool_call_loop(
             return Ok(display_text);
         }
 
+        // 支持原生工具调用的 provider 可能会返回与结构化调用分离的 assistant 文本，这里将其转发给草稿通道。
         // Native tool-call providers can return assistant text separately from
         // the structured call payload; relay it to draft-capable channels.
         if !display_text.is_empty() {
@@ -2942,6 +2984,7 @@ pub(crate) async fn run_tool_call_loop(
         let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
 
         for (idx, call) in tool_calls.iter().enumerate() {
+            // ── 钩子：before_tool_call（可修改） ──────────
             // ── Hook: before_tool_call (modifying) ──────────
             let mut tool_name = call.name.clone();
             let mut tool_args = call.arguments.clone();
@@ -3002,6 +3045,7 @@ pub(crate) async fn run_tool_call_loop(
                 channel_reply_target,
             );
 
+            // ── 审批钩子 ────────────────────────────────
             // ── Approval hook ────────────────────────────────
             if let Some(mgr) = approval {
                 if mgr.needs_approval(&tool_name) {
@@ -3122,6 +3166,7 @@ pub(crate) async fn run_tool_call_loop(
                 }),
             );
 
+            // ── 进度：工具开始执行 ────────────────────────────
             // ── Progress: tool start ────────────────────────────
             if let Some(ref tx) = on_delta {
                 let hint = {
@@ -3157,6 +3202,7 @@ pub(crate) async fn run_tool_call_loop(
             });
         }
 
+        // 当有多个工具且无需交互审批时，支持并发执行以降低总体耗时；否则串行。
         let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
             execute_tools_parallel(
                 &executable_calls,
@@ -3198,7 +3244,7 @@ pub(crate) async fn run_tool_call_loop(
                 }),
             );
 
-            // ── Hook: after_tool_call (void) ─────────────────
+            // ── 钩子：after_tool_call（仅通知） ─────────────────
             if let Some(hooks) = hooks {
                 let tool_result_obj = crate::tools::ToolResult {
                     success: outcome.success,
@@ -3210,7 +3256,7 @@ pub(crate) async fn run_tool_call_loop(
                     .await;
             }
 
-            // ── Progress: tool completion ───────────────────────
+            // ── 进度：工具执行完成 ───────────────────────
             if let Some(ref tx) = on_delta {
                 let secs = outcome.duration.as_secs();
                 let progress_msg = if outcome.success {
@@ -3292,6 +3338,7 @@ pub(crate) async fn run_tool_call_loop(
             );
         }
 
+        // ── 基于时间门控的循环检测 ──────────────────────────
         // ── Time-gated loop detection ──────────────────────────
         // When pacing.loop_detection_min_elapsed_secs is set, identical-output
         // loop detection activates after the task has been running that long.
@@ -3339,6 +3386,7 @@ pub(crate) async fn run_tool_call_loop(
             }
         }
 
+        // 将包含工具调用与结果的 assistant/tool 消息写回到历史中（原生模式与提示模式有所区别）。
         // Add assistant message with tool calls + tool results to history.
         // Native mode: use JSON-structured messages so convert_messages() can
         // reconstruct proper OpenAI-format tool_calls and tool result messages.
@@ -3387,6 +3435,7 @@ pub(crate) async fn run_tool_call_loop(
         }),
     );
 
+    // 优雅收尾：不再使用工具，向 LLM 请求最终总结
     // Graceful shutdown: ask the LLM for a final summary without tools
     tracing::warn!(
         max_iterations,
@@ -4225,23 +4274,29 @@ pub async fn run(
             );
 
             // For non-Medium levels, temporarily patch the system prompt with prefix.
+            // 对于非 Medium 级别：在本轮临时为系统提示加上前缀（只影响这一轮）。
             let turn_system_prompt;
             if let Some(ref prefix) = thinking_params.system_prompt_prefix {
+                // 将 prefix 放在现有 system_prompt 之前，中间加一个空行，组成本轮使用的系统提示。
                 turn_system_prompt = format!("{prefix}\n\n{system_prompt}");
                 // Update the system message in history for this turn.
+                // 更新历史中的首条 system 消息，使模型在本轮首先看到带前缀的系统提示。
                 if let Some(sys_msg) = history.first_mut() {
                     if sys_msg.role == "system" {
+                        // 仅替换内容，不改变消息顺序；clone 避免后续借用问题。
                         sys_msg.content = turn_system_prompt.clone();
                     }
                 }
             }
 
             // Auto-save conversation turns (skip short/trivial messages)
+            // 自动保存对话轮次（跳过过短/琐碎的消息），便于会话记忆与后续检索。
             if config.memory.auto_save
                 && effective_input.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
                 && !memory::should_skip_autosave_content(&effective_input)
             {
                 let user_key = autosave_memory_key("user_msg");
+                // 将用户输入存入记忆库（Conversation 类别），按可选的 memory_session_id 命名空间隔离。
                 let _ = mem
                     .store(
                         &user_key,
@@ -4253,6 +4308,7 @@ pub async fn run(
             }
 
             // Inject memory + hardware RAG context into user message
+            // 将记忆检索结果与硬件上下文（若有）注入到用户消息前，作为轻量 RAG 上下文。
             let mem_context = build_context(
                 mem.as_ref(),
                 &effective_input,
@@ -4268,21 +4324,27 @@ pub async fn run(
             let context = format!("{mem_context}{hw_context}");
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
             let enriched = if context.is_empty() {
+                // 无上下文时，仅加上时间戳包装输入。
                 format!("[{now}] {effective_input}")
             } else {
+                // 有上下文时，先拼接上下文，再附上时间戳与原始输入。
                 format!("{context}[{now}] {effective_input}")
             };
 
+            // 将增强后的用户消息压入历史，供后续 provider 调用与工具循环使用。
             history.push(ChatMessage::user(&enriched));
 
             // Compute per-turn excluded MCP tools from tool_filter_groups.
+            // 根据 tool_filter_groups 计算本轮需要禁用的 MCP 工具（按输入内容动态过滤）。
             let excluded_tools = compute_excluded_mcp_tools(
                 &tools_registry,
                 &config.agent.tool_filter_groups,
                 &effective_input,
             );
 
-            // 中文：设置流式输出通道，使工具进度与模型响应可以逐步打印而非一次性缓冲
+            // Set up streaming channel so tool progress and response
+            // content are printed progressively instead of buffered.
+            // 建立草稿事件流通道：逐步输出工具进度与模型内容，避免一次性缓冲。
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<DraftEvent>(64);
             let content_was_streamed =
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4294,9 +4356,11 @@ pub async fn run(
                 while let Some(event) = delta_rx.recv().await {
                     match event {
                         DraftEvent::Clear => {
+                            // 清一行，视觉分隔。
                             let _ = writeln!(std::io::stderr());
                         }
                         DraftEvent::Progress(text) => {
+                            // 进度信息以淡色输出到 stderr；非 TTY 环境则原样输出。
                             if is_tty {
                                 let _ = write!(std::io::stderr(), "\x1b[2m{text}\x1b[0m");
                             } else {
@@ -4305,6 +4369,7 @@ pub async fn run(
                             let _ = std::io::stderr().flush();
                         }
                         DraftEvent::Content(text) => {
+                            // 实际内容到来：标记为已流式输出，并写到 stdout。
                             content_streamed_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                             print!("{text}");
                             let _ = std::io::stdout().flush();
@@ -4313,7 +4378,8 @@ pub async fn run(
                 }
             });
 
-            // 中文：Ctrl+C 仅取消当前轮次，而不是终止整个进程
+            // Ctrl+C cancels the in-flight turn instead of killing the process.
+            // 捕获 Ctrl+C：取消当前进行中的回合，而不是直接终止进程。
             let cancel_token = CancellationToken::new();
             let cancel_token_clone = cancel_token.clone();
             let ctrlc_handle = tokio::spawn(async move {
@@ -4438,11 +4504,13 @@ pub async fn run(
                 }
             };
 
-            // 中文：清理：终止 Ctrl+C 监听，刷新未消费的流式事件
+            // Clean up: stop the Ctrl+C listener and flush streaming events.
+            // 清理收尾：停止 Ctrl+C 监听，关闭通道，等待消费者结束，保证输出完整。
             ctrlc_handle.abort();
             drop(delta_tx);
             let _ = consumer_handle.await;
 
+            // 若内容已以流式输出，则补一个换行；否则通过 Channel 统一输出响应。
             final_output = response.clone();
             if content_was_streamed.load(std::sync::atomic::Ordering::Relaxed) {
                 println!();
@@ -4456,7 +4524,8 @@ pub async fn run(
             }
             observer.record_event(&ObserverEvent::TurnComplete);
 
-            // 中文：在进行硬截断前先尝试上下文压缩，以尽可能保留长上下文信号
+            // Context compression before hard trimming to preserve long-context signal.
+            // 在做“硬裁剪”前尝试上下文压缩，以尽量保留长上下文信号。
             {
                 let compressor = crate::agent::context_compressor::ContextCompressor::new(
                     config.agent.context_compression.clone(),
@@ -4487,9 +4556,11 @@ pub async fn run(
             }
 
             // Hard cap as a safety net.
+            // 兜底的硬上限：若仍超界，强行截断历史到最大条数。
             trim_history(&mut history, config.agent.max_history_messages);
 
             // Restore base system prompt (remove per-turn thinking prefix).
+            // 恢复基础系统提示（移除本轮的思考级别前缀），避免污染后续回合。
             if thinking_params.system_prompt_prefix.is_some() {
                 if let Some(sys_msg) = history.first_mut() {
                     if sys_msg.role == "system" {
@@ -4498,6 +4569,7 @@ pub async fn run(
                 }
             }
 
+            // 如配置了交互会话状态文件，则持久化当前历史到磁盘。
             if let Some(path) = session_state_file.as_deref() {
                 save_interactive_session_history(path, &history)?;
             }

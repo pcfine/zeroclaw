@@ -164,16 +164,23 @@ impl InteractiveSessionState {
     }
 }
 
+/// 加载交互会话历史：
+/// - 如果状态文件不存在：以当前 system_prompt 作为唯一历史记录返回；
+/// - 如果存在：反序列化历史，并确保首条消息为 system；若缺失则插入。
 pub(crate) fn load_interactive_session_history(
     path: &Path,
     system_prompt: &str,
 ) -> Result<Vec<ChatMessage>> {
+    // 文件不存在时，返回仅包含系统提示的历史，确保会话上下文完整
     if !path.exists() {
         return Ok(vec![ChatMessage::system(system_prompt)]);
     }
 
+    // 读取磁盘状态并反序列化
     let raw = std::fs::read_to_string(path)?;
     let mut state: InteractiveSessionState = serde_json::from_str(&raw)?;
+
+    // 若历史为空，追加 system；若第一条不是 system，则在首位插入 system
     if state.history.is_empty() {
         state.history.push(ChatMessage::system(system_prompt));
     } else if state.history.first().map(|msg| msg.role.as_str()) != Some("system") {

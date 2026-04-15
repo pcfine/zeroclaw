@@ -74,27 +74,42 @@ impl Default for ThinkingConfig {
 }
 
 /// Parameters derived from a thinking level, applied to the LLM request.
+/// 根据思考级别推导出的参数，用于配置本次发送给大模型的请求。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThinkingParams {
     /// Temperature adjustment (added to the base temperature, clamped to 0.0..=2.0).
+    /// 温度调整量：在基础 temperature 上叠加该偏移；最终会被夹在 0.0..=2.0 之间。
     pub temperature_adjustment: f64,
     /// Maximum tokens adjustment (added to any existing max_tokens setting).
+    /// 最大 tokens 调整量：在已有的 max_tokens 设置基础上相加；可为负表示减少可用长度。
     pub max_tokens_adjustment: i64,
     /// Optional system prompt prefix injected before the existing system prompt.
+    /// 可选的 system 提示前缀：会在现有的系统提示之前注入，用于引导回答风格/深度。
     pub system_prompt_prefix: Option<String>,
 }
 
 /// Parse a `/think:<level>` directive from the start of a message.
+/// 解析消息开头的 `/think:<level>` 指令。
 ///
 /// Returns `Some((level, remaining_message))` if a directive is found,
 /// or `None` if no directive is present. The remaining message has
 /// leading whitespace after the directive trimmed.
+/// 找到则返回 `Some((level, remaining_message))`，否则返回 `None`；
+/// 返回的 `remaining_message` 会去除指令后的前导空白。
+///   边界与例子：
+///  - "/think:high What is Rust?" → Some(High, "What is Rust?")
+///  - "  /think:low  Tell me" → Some(Low, "Tell me")
+///  - "/think:off" → Some(Off, "")
+///  - "Hello /think:high"、"/think"、"/think:turbo" → None
 pub fn parse_thinking_directive(message: &str) -> Option<(ThinkingLevel, String)> {
+    // 去掉用户消息前端的空白，允许前面有空格或换行
     let trimmed = message.trim_start();
+    // 如果不是以 "/think:" 开头，则不视为思考级别指令
     if !trimmed.starts_with("/think:") {
         return None;
     }
 
+    // 提取级别标记：从 "/think:" 之后直到下一个空白字符或字符串结束
     // Extract the level token (everything between `/think:` and the next whitespace or end).
     let after_prefix = &trimmed["/think:".len()..];
     let level_end = after_prefix
@@ -102,9 +117,12 @@ pub fn parse_thinking_directive(message: &str) -> Option<(ThinkingLevel, String)
         .unwrap_or(after_prefix.len());
     let level_str = &after_prefix[..level_end];
 
+    // 忽略大小写解析思考级别；解析失败返回 None（通过 `?` 提早返回）
     let level = ThinkingLevel::from_str_insensitive(level_str)?;
 
+    // 取得剩余消息体：取出级别之后的部分，并再次去掉前导空白
     let remaining = after_prefix[level_end..].trim_start().to_string();
+    // 返回 (思考级别, 剩余消息)
     Some((level, remaining))
 }
 
