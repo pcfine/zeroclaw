@@ -64,6 +64,7 @@ const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_TTL_SECS: u64 = 12 * 60 * 60;
 const CUSTOM_MODEL_SENTINEL: &str = "__custom_model__";
 
+/// 判断是否存在可启动的渠道（排除 webhook），任一可用即返回 true。
 fn has_launchable_channels(channels: &ChannelsConfig) -> bool {
     channels.channels_except_webhook().iter().any(|(_, ok)| *ok)
 }
@@ -76,6 +77,9 @@ enum InteractiveOnboardingMode {
     UpdateProviderOnly,
 }
 
+/// 交互式引导主入口：按步骤配置工作区、提供商/API Key、渠道、隧道、工具、安全、硬件、记忆与项目上下文，最后生成并保存配置。
+/// 参数：
+/// - force：当检测到已有配置时是否强制重跑完整引导；否则切入“仅更新提供商”模式。
 pub async fn run_wizard(force: bool) -> Result<Config> {
     println!("{}", style(BANNER).cyan().bold());
 
@@ -263,8 +267,11 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
 }
 
 /// Interactive repair flow: rerun channel setup only without redoing full onboarding.
+/// 交互式修复流程：仅重新运行渠道（Channels）设置，而不重走完整的引导流程。
 pub async fn run_channels_repair_wizard() -> Result<Config> {
+    // 打印欢迎横幅
     println!("{}", style(BANNER).cyan().bold());
+    // 打印修复模式标题，说明只更新渠道令牌和允许名单
     println!(
         "  {}",
         style("Channels Repair — update channel tokens and allowlists only")
@@ -273,13 +280,18 @@ pub async fn run_channels_repair_wizard() -> Result<Config> {
     );
     println!();
 
+    // 加载或初始化现有配置（若不存在则创建默认配置）
     let mut config = Box::pin(Config::load_or_init()).await?;
 
+    // 第 1 步：仅重新配置消息渠道（令牌、白名单等），保留其他设置不变
     print_step(1, 1, "Channels (How You Talk to ZeroClaw)");
+    // 基于当前的 channels 配置作为初始值，进入交互式渠道设置并覆盖回配置
     config.channels_config = setup_channels(Some(config.channels_config.clone()))?;
+    // 保存最新配置到磁盘，并持久化当前工作区选择
     config.save().await?;
     persist_workspace_selection(&config.config_path).await?;
 
+    // 打印保存成功提示与配置文件路径
     println!();
     println!(
         "  {} Channel config saved: {}",
@@ -287,8 +299,10 @@ pub async fn run_channels_repair_wizard() -> Result<Config> {
         style(config.config_path.display()).green()
     );
 
+    // 判断是否存在可启动的渠道（如有有效配置）
     let has_channels = has_launchable_channels(&config.channels_config);
 
+    // 若存在渠道且已设置 API Key，则询问是否立即启动 channel 服务
     if has_channels && config.api_key.is_some() {
         let launch: bool = Confirm::new()
             .with_prompt(format!(
@@ -299,6 +313,7 @@ pub async fn run_channels_repair_wizard() -> Result<Config> {
             .interact()?;
 
         if launch {
+            // 打印启动提示
             println!();
             println!(
                 "  {} {}",
@@ -306,16 +321,21 @@ pub async fn run_channels_repair_wizard() -> Result<Config> {
                 style("Starting channel server...").white().bold()
             );
             println!();
-            // Signal to main.rs to call start_channels after wizard returns
-            // SAFETY: called during single-threaded onboarding wizard before async runtime.
+            // 向主程序发信号：向环境变量写入标记，向 main.rs 表示向导结束后应调用 start_channels
+            // SAFETY: 在异步运行时启动前，单线程的引导向导内调用是安全的。
             unsafe { std::env::set_var("ZEROCLAW_AUTOSTART_CHANNELS", "1") };
         }
     }
 
+    // 返回更新后的配置
     Ok(config)
 }
 
 /// Interactive flow: update only provider/model/api key while preserving existing config.
+/// 仅更新 AI 提供商/模型/API Key 的交互式流程，保留现有其它配置（渠道、记忆、隧道、钩子等）。
+/// 参数：
+/// - workspace_dir：工作区目录路径
+/// - config_path：配置文件路径
 async fn run_provider_update_wizard(workspace_dir: &Path, config_path: &Path) -> Result<Config> {
     println!();
     println!(
@@ -378,6 +398,7 @@ async fn run_provider_update_wizard(workspace_dir: &Path, config_path: &Path) ->
     Ok(config)
 }
 
+/// 将提供商/模型/API URL/API Key 更新应用到 Config（空白 API Key 会清空）。
 fn apply_provider_update(
     config: &mut Config,
     provider: String,
@@ -399,12 +420,14 @@ fn apply_provider_update(
 
 /// Non-interactive setup: generates a sensible default config instantly.
 /// Use `zeroclaw onboard` or `zeroclaw onboard --api-key sk-... --provider openrouter --memory sqlite|lucid`.
+/// 将内存后端菜单选择索引映射为后端 key；越界时返回默认后端。
 fn backend_key_from_choice(choice: usize) -> &'static str {
     selectable_memory_backends()
         .get(choice)
         .map_or(default_memory_backend_key(), |backend| backend.key)
 }
 
+/// 基于后端 profile 生成对应的 MemoryConfig 默认值（如自动保存、卫生策略、TTL 等）。
 fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
     let profile = memory_backend_profile(backend);
 
@@ -450,6 +473,8 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
 }
 
 #[allow(clippy::too_many_lines)]
+/// 非交互式快速初始化入口：基于可选覆盖参数与用户家目录推导路径，生成默认配置。
+#[allow(clippy::too_many_lines)]
 pub async fn run_quick_setup(
     credential_override: Option<&str>,
     provider: Option<&str>,
@@ -472,6 +497,7 @@ pub async fn run_quick_setup(
     .await
 }
 
+/// 基于环境变量/安装方式/家目录决策配置与工作区目录（兼容 Homebrew 安装路径约定）。
 fn resolve_quick_setup_dirs_with_home(home: &Path) -> (PathBuf, PathBuf) {
     if let Ok(custom_config_dir) = std::env::var("ZEROCLAW_CONFIG_DIR") {
         let trimmed = custom_config_dir.trim();
@@ -506,6 +532,7 @@ fn resolve_quick_setup_dirs_with_home(home: &Path) -> (PathBuf, PathBuf) {
     (config_dir.clone(), config_dir.join("workspace"))
 }
 
+/// 判断给定可执行路径是否为 Homebrew 布局，返回其前缀路径（/opt/homebrew 或 /usr/local）。
 fn homebrew_prefix_for_exe(exe: &Path) -> Option<&'static str> {
     let exe = exe.to_string_lossy();
     if exe == "/opt/homebrew/bin/zeroclaw"
@@ -525,6 +552,7 @@ fn homebrew_prefix_for_exe(exe: &Path) -> Option<&'static str> {
     None
 }
 
+/// 若当前配置/工作区未与 Homebrew 服务默认路径一致，则返回一段提示信息供用户对齐服务目录。
 fn quick_setup_homebrew_service_note(
     config_path: &Path,
     workspace_dir: &Path,
@@ -547,6 +575,8 @@ fn quick_setup_homebrew_service_note(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
+/// 非交互式快速初始化核心实现：解析目录、校验覆盖、构造内存/提供商/模型等默认配置并落盘。
 #[allow(clippy::too_many_lines)]
 async fn run_quick_setup_with_home(
     credential_override: Option<&str>,
@@ -801,6 +831,7 @@ async fn run_quick_setup_with_home(
     Ok(config)
 }
 
+/// 统一提供商名称的别名（如 grok→xai，google→gemini 等），返回规范化名称。
 fn canonical_provider_name(provider_name: &str) -> &str {
     if is_qwen_oauth_alias(provider_name) {
         return "qwen-code";
@@ -824,6 +855,7 @@ fn canonical_provider_name(provider_name: &str) -> &str {
     }
 }
 
+/// 判断该提供商是否允许在未认证情况下拉取模型列表（公开目录或本地提供商）。
 fn allows_unauthenticated_model_fetch(provider_name: &str) -> bool {
     matches!(
         canonical_provider_name(provider_name),
@@ -853,6 +885,7 @@ const MINIMAX_ONBOARD_MODELS: [(&str, &str); 7] = [
     ("MiniMax-M2", "MiniMax M2 (legacy)"),
 ];
 
+/// 为指定提供商选择一个合理的默认模型（基于规范化后的 provider 名）。
 fn default_model_for_provider(provider: &str) -> String {
     match canonical_provider_name(provider) {
         "anthropic" => "claude-sonnet-4-5-20250929".into(),
@@ -885,6 +918,7 @@ fn default_model_for_provider(provider: &str) -> String {
     }
 }
 
+/// 为指定提供商提供一组精心挑选的模型选项（id, 标签），用于引导界面展示。
 fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
     match canonical_provider_name(provider_name) {
         "openrouter" => vec![
@@ -1325,6 +1359,7 @@ fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
     }
 }
 
+/// 判断该提供商是否支持实时拉取模型目录（若为 custom: 前缀或列出的已知提供商则支持）。
 fn supports_live_model_fetch(provider_name: &str) -> bool {
     if provider_name.trim().starts_with("custom:") {
         return true;
@@ -1362,6 +1397,7 @@ fn supports_live_model_fetch(provider_name: &str) -> bool {
     )
 }
 
+/// 根据提供商名称（含地区/别名）返回对应模型查询端点 URL（若无则返回 None）。
 fn models_endpoint_for_provider(provider_name: &str) -> Option<&'static str> {
     match provider_name {
         "qwen-intl" => Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"),
@@ -1397,6 +1433,7 @@ fn models_endpoint_for_provider(provider_name: &str) -> Option<&'static str> {
     }
 }
 
+/// 构建用于拉取模型目录的 HTTP 客户端（含合理超时）。
 fn build_model_fetch_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -1405,6 +1442,7 @@ fn build_model_fetch_client() -> Result<reqwest::Client> {
         .context("failed to build model-fetch HTTP client")
 }
 
+/// 归一化模型 ID：去空白、大小写不敏感去重，保持原始大小写的首个出现。
 fn normalize_model_ids(ids: Vec<String>) -> Vec<String> {
     let mut unique = BTreeMap::new();
     for id in ids {
@@ -1418,6 +1456,7 @@ fn normalize_model_ids(ids: Vec<String>) -> Vec<String> {
     unique.into_values().collect()
 }
 
+/// 解析 OpenAI 兼容响应中的模型 ID（支持 data 数组或根级数组两种结构）。
 fn parse_openai_compatible_model_ids(payload: &Value) -> Vec<String> {
     let mut models = Vec::new();
 
@@ -1438,6 +1477,7 @@ fn parse_openai_compatible_model_ids(payload: &Value) -> Vec<String> {
     normalize_model_ids(models)
 }
 
+/// 解析 Gemini 响应中的模型 ID，仅保留支持 generateContent 的模型。
 fn parse_gemini_model_ids(payload: &Value) -> Vec<String> {
     let Some(models) = payload.get("models").and_then(Value::as_array) else {
         return Vec::new();
@@ -1466,6 +1506,7 @@ fn parse_gemini_model_ids(payload: &Value) -> Vec<String> {
     normalize_model_ids(ids)
 }
 
+/// 解析 Ollama 标签响应中的模型名称列表。
 fn parse_ollama_model_ids(payload: &Value) -> Vec<String> {
     let Some(models) = payload.get("models").and_then(Value::as_array) else {
         return Vec::new();
@@ -1481,6 +1522,7 @@ fn parse_ollama_model_ids(payload: &Value) -> Vec<String> {
     normalize_model_ids(ids)
 }
 
+/// 拉取 OpenAI 兼容端点的模型列表（可选 Bearer/OAuth，无 Key 时可拒绝）。
 async fn fetch_openai_compatible_models(
     endpoint: &str,
     api_key: Option<&str>,
@@ -1507,6 +1549,7 @@ async fn fetch_openai_compatible_models(
     Ok(parse_openai_compatible_model_ids(&payload))
 }
 
+/// 从 OpenRouter 拉取模型列表（可附带 API Key）。
 async fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<String>> {
     let client = build_model_fetch_client()?;
     let mut request = client.get("https://openrouter.ai/api/v1/models");
@@ -1526,6 +1569,7 @@ async fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<String>> {
     Ok(parse_openai_compatible_model_ids(&payload))
 }
 
+/// 从 Anthropic 拉取模型列表（支持 OAuth token 与 x-api-key 两种认证头）。
 async fn fetch_anthropic_models(api_key: Option<&str>) -> Result<Vec<String>> {
     let Some(api_key) = api_key else {
         bail!("Anthropic model fetch requires API key or OAuth token");
@@ -1563,6 +1607,7 @@ async fn fetch_anthropic_models(api_key: Option<&str>) -> Result<Vec<String>> {
     Ok(parse_openai_compatible_model_ids(&payload))
 }
 
+/// 从 Gemini 拉取模型列表（Query 参数带 key 与 pageSize）。
 async fn fetch_gemini_models(api_key: Option<&str>) -> Result<Vec<String>> {
     let Some(api_key) = api_key else {
         bail!("Gemini model fetch requires API key");
@@ -1583,6 +1628,7 @@ async fn fetch_gemini_models(api_key: Option<&str>) -> Result<Vec<String>> {
     Ok(parse_gemini_model_ids(&payload))
 }
 
+/// 从本地 Ollama 端点拉取标签列表，并提取模型名称。
 async fn fetch_ollama_models() -> Result<Vec<String>> {
     let client = build_model_fetch_client()?;
     let payload: Value = client
@@ -1598,6 +1644,7 @@ async fn fetch_ollama_models() -> Result<Vec<String>> {
     Ok(parse_ollama_model_ids(&payload))
 }
 
+/// 归一化 Ollama 端点 URL：去除尾部 / 与 /api 后缀，返回标准基址。
 fn normalize_ollama_endpoint_url(raw_url: &str) -> String {
     let trimmed = raw_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -1610,6 +1657,7 @@ fn normalize_ollama_endpoint_url(raw_url: &str) -> String {
         .to_string()
 }
 
+/// 判断 Ollama 端点是否为本地地址（localhost/127.0.0.1/::1/0.0.0.0）。
 fn ollama_endpoint_is_local(endpoint_url: &str) -> bool {
     reqwest::Url::parse(endpoint_url)
         .ok()
@@ -1617,6 +1665,7 @@ fn ollama_endpoint_is_local(endpoint_url: &str) -> bool {
         .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0"))
 }
 
+/// 判断 Ollama 是否配置了远程端点（provider_api_url 非空且归一化后非本地）。
 fn ollama_uses_remote_endpoint(provider_api_url: Option<&str>) -> bool {
     let Some(endpoint) = provider_api_url else {
         return false;
@@ -2287,6 +2336,7 @@ async fn persist_workspace_selection(config_path: &Path) -> Result<()> {
 
 // ── Step 1: Workspace ────────────────────────────────────────────
 
+/// 交互式选择/输入工作区路径，并创建目录；返回 (workspace_dir, config_path)。
 async fn setup_workspace() -> Result<(PathBuf, PathBuf)> {
     let (default_config_dir, default_workspace_dir) =
         crate::config::schema::resolve_runtime_dirs_for_onboarding().await?;
@@ -2328,6 +2378,9 @@ async fn setup_workspace() -> Result<(PathBuf, PathBuf)> {
 
 // ── Step 2: Provider & API Key ───────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
+/// 交互式选择提供商类别与具体提供商，收集 API Key/设备登录信息，选择模型并返回
+/// (provider, api_key, model, provider_api_url)。
 #[allow(clippy::too_many_lines)]
 async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String, Option<String>)> {
     // ── Tier selection ──
@@ -3072,6 +3125,7 @@ fn local_provider_choices() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Map provider name to its conventional env var
+/// 将提供商名称映射到常见环境变量名（用于读取 API Key/OAuth Token）。
 fn provider_env_var(name: &str) -> &'static str {
     if canonical_provider_name(name) == "qwen-code" {
         return "QWEN_OAUTH_TOKEN";
@@ -3117,6 +3171,7 @@ fn provider_env_var(name: &str) -> &'static str {
     }
 }
 
+/// 判断提供商是否支持无密钥的本地使用（如 Ollama/llama.cpp 等）。
 fn provider_supports_keyless_local_usage(provider_name: &str) -> bool {
     matches!(
         canonical_provider_name(provider_name),
@@ -3124,6 +3179,7 @@ fn provider_supports_keyless_local_usage(provider_name: &str) -> bool {
     )
 }
 
+/// 判断提供商是否支持设备码/OAuth 登录流程（如 Copilot/Gemini/OpenAI Codex）。
 fn provider_supports_device_flow(provider_name: &str) -> bool {
     matches!(
         canonical_provider_name(provider_name),
@@ -3133,6 +3189,7 @@ fn provider_supports_device_flow(provider_name: &str) -> bool {
 
 // ── Step 5: Tool Mode & Security ────────────────────────────────
 
+/// 交互式选择工具模式（本地 Sovereign 或 Composio 托管 OAuth）并配置密钥加密。
 fn setup_tool_mode() -> Result<(ComposioConfig, SecretsConfig)> {
     print_bullet("Choose how ZeroClaw connects to external apps.");
     print_bullet("You can always change this later in config.toml.");
@@ -3223,6 +3280,7 @@ fn setup_tool_mode() -> Result<(ComposioConfig, SecretsConfig)> {
 
 // ── Step 6: Hardware (Physical World) ───────────────────────────
 
+/// 交互式配置物理硬件接入：自动发现设备，选择传输方式（本机/串口/Probe），可选启用资料检索。
 fn setup_hardware() -> Result<HardwareConfig> {
     print_bullet("ZeroClaw can talk to physical hardware (LEDs, sensors, motors).");
     print_bullet("Scanning for connected devices...");
@@ -3411,6 +3469,7 @@ fn setup_hardware() -> Result<HardwareConfig> {
 
 // ── Step 6: Project Context ─────────────────────────────────────
 
+/// 交互式个性化代理：采集用户名/时区/代理名/沟通风格，返回 ProjectContext。
 fn setup_project_context() -> Result<ProjectContext> {
     print_bullet("Let's personalize your agent. You can always update these later.");
     print_bullet("Press Enter to accept defaults.");
@@ -3509,6 +3568,7 @@ fn setup_project_context() -> Result<ProjectContext> {
 
 // ── Step 6: Memory Configuration ───────────────────────────────
 
+/// 交互式选择记忆后端与参数（自动保存、卫生/保留策略、缓存、检索阶段等），生成 MemoryConfig。
 fn setup_memory() -> Result<MemoryConfig> {
     print_bullet("Choose how ZeroClaw stores and searches memories.");
     print_bullet("You can always change this later in config.toml.");
@@ -3591,10 +3651,13 @@ const CHANNEL_MENU_CHOICES: &[ChannelMenuChoice] = &[
     ChannelMenuChoice::Done,
 ];
 
+/// 返回渠道菜单枚举常量切片，控制向导中可选择的渠道项。
 fn channel_menu_choices() -> &'static [ChannelMenuChoice] {
     CHANNEL_MENU_CHOICES
 }
 
+#[allow(clippy::too_many_lines)]
+/// 交互式配置消息渠道（Telegram/Discord/Slack/Matrix/Signal/…），支持基于现有配置增量修改。
 #[allow(clippy::too_many_lines)]
 fn setup_channels(existing: Option<ChannelsConfig>) -> Result<ChannelsConfig> {
     print_bullet("Channels let you talk to ZeroClaw from anywhere.");
@@ -5559,6 +5622,8 @@ fn setup_channels(existing: Option<ChannelsConfig>) -> Result<ChannelsConfig> {
 // ── Step 4: Tunnel ──────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
+/// 交互式配置安全隧道（Cloudflare/Tailscale/ngrok/自定义），可跳过保持本地。
+#[allow(clippy::too_many_lines)]
 fn setup_tunnel() -> Result<crate::config::TunnelConfig> {
     use crate::config::schema::{
         CloudflareTunnelConfig, CustomTunnelConfig, NgrokTunnelConfig, TailscaleTunnelConfig,
@@ -5714,6 +5779,7 @@ fn setup_tunnel() -> Result<crate::config::TunnelConfig> {
 // ── Step 6: Scaffold workspace files ─────────────────────────────
 
 #[allow(clippy::too_many_lines)]
+/// 创建默认工作区文件与子目录（若已存在则跳过），并打印简要目录树。
 async fn scaffold_workspace(
     workspace_dir: &Path,
     ctx: &ProjectContext,
@@ -6015,6 +6081,8 @@ async fn scaffold_workspace(
 
 // ── Final summary ────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
+/// 引导流程结束时的终端总结：输出主要配置项、下一步指引与启动建议。
 #[allow(clippy::too_many_lines)]
 fn print_summary(config: &Config) {
     let has_channels = has_launchable_channels(&config.channels_config);
